@@ -301,14 +301,33 @@ async function startBot() {
       const text = rawText.trim();
       if (!text) continue;
 
-      if (/^[✅💰📊↩️⚠️•]/.test(text) || text.startsWith('Dompet default:') || text.startsWith('📖 *Panduan')) {
+      // Abaikan pesan balasan dari bot sendiri agar tidak terjadi looping
+      if (
+        /^[✅💰📊↩️⚠️•📖🤖]/.test(text) ||
+        text.startsWith('Dompet default:') ||
+        text.startsWith('Aku tidak menemukan') ||
+        text.startsWith('Bagian ke-') ||
+        text.startsWith('Peringatan:') ||
+        text.startsWith('Dibatalkan:')
+      ) {
         continue;
       }
+
+      // Helper untuk kirim balasan sekaligus menandai ID pesan agar tidak diproses balik
+      const replyMessage = async (jid, content) => {
+        try {
+          const sent = await sock.sendMessage(jid, content);
+          if (sent?.key?.id) markSeen(sent.key.id);
+          return sent;
+        } catch (e) {
+          console.error('Gagal kirim pesan:', e.message);
+        }
+      };
 
       if (isGroup && text.toLowerCase() === '.setgroup') {
         config.targetGroupId = remoteJid;
         saveConfig();
-        await sock.sendMessage(remoteJid, {
+        await replyMessage(remoteJid, {
           text: `✅ *Grup ini berhasil dihubungkan ke Keuanganku!*\nSekarang kamu bisa langsung ketik transaksi di sini (misal: "makan siang 25rb gopay" atau "saldo").`
         });
         continue;
@@ -338,7 +357,7 @@ async function startBot() {
       let low = cleanText.toLowerCase();
 
       try {
-        if (/^(start|bantuan|help|menu|halo|hai|hi|\?)$/.test(low)) {
+        if (/^(start|bantuan|help|menu|halo+|hai+|hi+|\?)$/i.test(low)) {
           const help = `📖 *Panduan Penggunaan Bot Keuanganku*\n\n` +
             `*1. Catat Pengeluaran/Pemasukan:*\n` +
             `• makan siang 25rb gopay\n` +
@@ -353,25 +372,25 @@ async function startBot() {
             `• ketik *rekap* : Rekap pengeluaran bulan ini\n` +
             `• ketik *undo* atau *batal* : Batalkan transaksi terakhir\n` +
             `• ketik *default <dompet>* : Ganti dompet default (mis. default bca)`;
-          await sock.sendMessage(remoteJid, { text: help });
+          await replyMessage(remoteJid, { text: help });
           continue;
         }
 
         if (/^(saldo|cek saldo)$/.test(low)) {
           const saldoText = await getSaldo(config.uid);
-          await sock.sendMessage(remoteJid, { text: saldoText });
+          await replyMessage(remoteJid, { text: saldoText });
           continue;
         }
 
         if (/^(rekap|laporan|bulan ini|rekap bulan ini)$/.test(low)) {
           const rekapText = await getRekap(config.uid);
-          await sock.sendMessage(remoteJid, { text: rekapText });
+          await replyMessage(remoteJid, { text: rekapText });
           continue;
         }
 
         if (/^(undo|batal|hapus terakhir)$/.test(low)) {
           const undoMsg = await undoLast(config.uid);
-          await sock.sendMessage(remoteJid, { text: undoMsg });
+          await replyMessage(remoteJid, { text: undoMsg });
           continue;
         }
 
@@ -380,18 +399,18 @@ async function startBot() {
           const names = Object.keys(WALLETS).map(k => WALLETS[k]).join(', ');
           if (!arg) {
             const cur = await getDefaultSource(config.uid);
-            await sock.sendMessage(remoteJid, {
+            await replyMessage(remoteJid, {
               text: `Dompet default saat ini: *${WALLETS[cur] || 'Cash'}*.\nGanti dengan *default bca* (Pilihan: ${names}).`
             });
           } else {
             const match = Object.keys(WALLETS).find(k => k === arg || WALLETS[k].toLowerCase() === arg);
             if (match) {
               await setDefaultSource(config.uid, match);
-              await sock.sendMessage(remoteJid, {
+              await replyMessage(remoteJid, {
                 text: `✅ Dompet default diubah menjadi *${WALLETS[match]}*. Transaksi tanpa nama dompet akan otomatis masuk ke sini.`
               });
             } else {
-              await sock.sendMessage(remoteJid, {
+              await replyMessage(remoteJid, {
                 text: `Dompet "${arg}" tidak dikenal. Pilihan: ${names}.`
               });
             }
@@ -406,14 +425,14 @@ async function startBot() {
             `${rupiah_(tx.amount)} : ${WALLETS[tf.sourceFrom]} ➡️ ${WALLETS[tf.sourceTo]}\n\n` +
             `• Saldo ${WALLETS[tf.sourceFrom]}: ${rupiah_(balFrom)}\n` +
             `• Saldo ${WALLETS[tf.sourceTo]}: ${rupiah_(balTo)}`;
-          await sock.sendMessage(remoteJid, { text: reply });
+          await replyMessage(remoteJid, { text: reply });
           continue;
         }
 
         const parsed = parseMessage_(cleanText);
         if (!parsed.ok) {
           if (isTargetGroup) {
-            await sock.sendMessage(remoteJid, { text: parsed.message });
+            await replyMessage(remoteJid, { text: '⚠️ ' + parsed.message });
           }
           continue;
         }
@@ -434,7 +453,7 @@ async function startBot() {
             `${sign}${rupiah_(tx.amount)} · ${tx.category}\n` +
             `📝 ${tx.title}\n` +
             `👛 ${WALLETS[tx.source]}: Saldo ${rupiah_(walletBalances[tx.source])}`;
-          await sock.sendMessage(remoteJid, { text: reply });
+          await replyMessage(remoteJid, { text: reply });
         } else {
           const lines = txs.map((tx, i) => {
             const sign = tx.type === 'income' ? '+' : '-';
@@ -444,12 +463,12 @@ async function startBot() {
           const reply = `✅ *${txs.length} Transaksi Dicatat*\n` +
             lines.join('\n') + '\n\n' +
             `👛 *Saldo Terkait:*\n` + walletLines.join('\n');
-          await sock.sendMessage(remoteJid, { text: reply });
+          await replyMessage(remoteJid, { text: reply });
         }
       } catch (err) {
         console.error('Error saat memproses pesan:', err);
         if (isTargetGroup) {
-          await sock.sendMessage(remoteJid, {
+          await replyMessage(remoteJid, {
             text: `⚠️ Maaf, terjadi kesalahan saat menyimpan transaksi:\n${err.message}`
           });
         }
