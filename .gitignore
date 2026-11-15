@@ -1,0 +1,4 @@
+node_modules/
+auth_info_baileys/
+service-account.json
+.DS_Store
