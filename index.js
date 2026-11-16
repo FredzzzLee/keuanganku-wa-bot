@@ -148,6 +148,128 @@ function sendTelegramNotification(message) {
   }
 }
 
+let tgPollingActive = false;
+let lastTgUpdateId = 0;
+
+function sendTelegramAck(chatId, text) {
+  if (!config.tgBotToken) return;
+  const payload = JSON.stringify({
+    chat_id: String(chatId),
+    text: text,
+    parse_mode: 'Markdown'
+  });
+  const req = https.request({
+    hostname: 'api.telegram.org',
+    port: 443,
+    path: `/bot${config.tgBotToken}/sendMessage`,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(payload)
+    },
+    timeout: 5000
+  }, res => res.resume());
+  req.on('error', () => {});
+  req.write(payload);
+  req.end();
+}
+
+function startTelegramPolling() {
+  if (!config.tgBotToken || tgPollingActive) return;
+  tgPollingActive = true;
+  console.log('[Telegram Polling] Mendengarkan balasan chat dari Mas Fando di Telegram...');
+
+  // Hapus webhook jika pernah ada agar getUpdates berfungsi lancar
+  try {
+    const delReq = https.request({
+      hostname: 'api.telegram.org',
+      port: 443,
+      path: `/bot${config.tgBotToken}/deleteWebhook`,
+      method: 'POST',
+      headers: { 'Content-Length': 0 }
+    }, res => res.resume());
+    delReq.on('error', () => {});
+    delReq.end();
+  } catch (e) {}
+
+  function poll() {
+    if (!config.tgBotToken) {
+      tgPollingActive = false;
+      return;
+    }
+
+    try {
+      const payload = JSON.stringify({
+        offset: lastTgUpdateId + 1,
+        timeout: 20,
+        allowed_updates: ['message']
+      });
+
+      const options = {
+        hostname: 'api.telegram.org',
+        port: 443,
+        path: `/bot${config.tgBotToken}/getUpdates`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload)
+        },
+        timeout: 25000
+      };
+
+      const req = https.request(options, res => {
+        let body = '';
+        res.on('data', chunk => body += chunk);
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(body);
+            if (data.ok && Array.isArray(data.result)) {
+              for (const update of data.result) {
+                lastTgUpdateId = update.update_id;
+                const m = update.message;
+                if (!m || !m.text) continue;
+
+                // Pastikan hanya pesan dari Mas Fando (Chat ID sesuai)
+                if (String(m.chat.id) !== String(config.tgChatId)) continue;
+
+                const text = m.text.trim();
+                if (text === '/start') {
+                  sendTelegramAck(m.chat.id, '👋 *Halo Mas Fando!*\nBot sudah aktif. Ketik apa saja langsung di sini (tanpa awalan apapun), dan pesanmu akan langsung masuk ke layar laptop Enat!');
+                  continue;
+                }
+
+                // Teruskan langsung ke laptop Enat tanpa perlu awalan apapun!
+                addAdikMessage('mas', text);
+                notifyUbuntuDesktop('Pesan dari Mas Fando', text);
+
+                // Kirim konfirmasi balik ke Telegram
+                sendTelegramAck(m.chat.id, `✅ *Terkirim ke Enat:*\n"${text}"`);
+              }
+            }
+          } catch (e) {}
+          setTimeout(poll, 1000);
+        });
+      });
+
+      req.on('error', () => {
+        setTimeout(poll, 5000);
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        setTimeout(poll, 1000);
+      });
+
+      req.write(payload);
+      req.end();
+    } catch (e) {
+      setTimeout(poll, 5000);
+    }
+  }
+
+  setTimeout(poll, 2000);
+}
+
 function sendPushNotification(title, message) {
   const topic = config.ntfyTopic || 'fando-pesan-adik-2026';
   const postData = Buffer.from(message, 'utf8');
@@ -522,7 +644,10 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`[Web Server] Aktif di port ${PORT}`);
-  console.log(`[Chat Adik] Buka http://localhost:${PORT}/pesan untuk chat khusus adik`);
+  console.log(`[Chat Enat] Buka http://localhost:${PORT}/pesan untuk chat khusus Enat`);
+  if (config.tgBotToken) {
+    startTelegramPolling();
+  }
 });
 
 // ==========================================
@@ -732,8 +857,9 @@ async function startBot() {
           if (tkn) {
             config.tgBotToken = tkn;
             saveConfig();
-            sendTelegramNotification('Halo Mas Fando! Bot Token Telegram berhasil disimpan dan aktif.');
-            await replyMessage(remoteJid, { text: `✅ *Bot Token Telegram berhasil disimpan!*\nNotifikasi percobaan sedang dikirim ke akun Telegram Mas Fando.` });
+            startTelegramPolling();
+            sendTelegramNotification('Halo Mas Fando! Bot Token Telegram berhasil disimpan dan pendengar chat dua arah aktif.');
+            await replyMessage(remoteJid, { text: `✅ *Bot Token Telegram berhasil disimpan!*\nSekarang Mas Fando bisa membalas langsung dari Telegram tanpa perlu mengetik .enat lagi.` });
             continue;
           }
         }
