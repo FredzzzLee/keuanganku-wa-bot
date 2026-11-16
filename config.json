@@ -2,9 +2,14 @@
   "uid": "IOb7TUEF4eWiKlow5C06AvWepqD3",
   "targetGroupName": "Duit Gua Tuh",
   "targetGroupId": "120363432547277067@g.us",
+  "chatGroupName": "Turu Lee",
+  "chatGroupId": null,
   "defaultWallet": "cash",
   "ntfyTopic": "fando-pesan-adik-2026",
   "ntfyServer": "https://ntfy.adminforge.de",
   "tgBotToken": null,
-  "tgChatId": "1844869035"
+  "tgChatId": "1844869035",
+  "chatMembers": {
+    "6283184997388": { "name": "Eisss", "color": "#ff6b6b" }
+  }
 }

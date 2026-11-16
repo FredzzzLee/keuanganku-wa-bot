@@ -3,7 +3,8 @@ const {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
-  Browsers
+  Browsers,
+  downloadMediaMessage
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
@@ -33,11 +34,16 @@ let config = {
   uid: 'IOb7TUEF4eWiKlow5C06AvWepqD3',
   targetGroupName: 'Duit Gua Tuh',
   targetGroupId: null,
+  chatGroupName: 'Turu Lee',
+  chatGroupId: null,
   defaultWallet: 'cash',
   ntfyTopic: 'fando-pesan-adik-2026',
   ntfyServer: 'https://ntfy.adminforge.de',
   tgBotToken: null,
-  tgChatId: '1844869035'
+  tgChatId: '1844869035',
+  chatMembers: {
+    '6283184997388': { name: 'Eisss', color: '#ff6b6b' }
+  }
 };
 
 if (fs.existsSync(configPath)) {
@@ -63,42 +69,83 @@ function markSeen(id) {
 }
 
 // ==========================================
-// Fitur Chat Khusus Adik (Privat)
+// Fitur Chat Grup "Turu Lee" (3 orang)
 // ==========================================
+const chatGroupPath = path.join(__dirname, 'chat_group.json');
+let chatGroupMessages = [];
+if (fs.existsSync(chatGroupPath)) {
+  try {
+    chatGroupMessages = JSON.parse(fs.readFileSync(chatGroupPath, 'utf8'));
+  } catch (e) {}
+}
+
+// Migrasi data lama chat_adik.json ke chat_group.json
 const chatAdikPath = path.join(__dirname, 'chat_adik.json');
-let chatAdikMessages = [];
-if (fs.existsSync(chatAdikPath)) {
+if (fs.existsSync(chatAdikPath) && chatGroupMessages.length === 0) {
   try {
-    chatAdikMessages = JSON.parse(fs.readFileSync(chatAdikPath, 'utf8'));
+    const old = JSON.parse(fs.readFileSync(chatAdikPath, 'utf8'));
+    chatGroupMessages = old.map(m => ({ ...m, from: m.from === 'kakak' ? 'mas' : m.from }));
+    saveChatGroup();
+    console.log('[Migrasi] chat_adik.json → chat_group.json selesai.');
   } catch (e) {}
 }
 
-function saveChatAdik() {
+function saveChatGroup() {
   try {
-    if (chatAdikMessages.length > 100) chatAdikMessages = chatAdikMessages.slice(-100);
-    fs.writeFileSync(chatAdikPath, JSON.stringify(chatAdikMessages, null, 2), 'utf8');
+    if (chatGroupMessages.length > 200) chatGroupMessages = chatGroupMessages.slice(-200);
+    fs.writeFileSync(chatGroupPath, JSON.stringify(chatGroupMessages, null, 2), 'utf8');
   } catch (e) {}
 }
 
-function addAdikMessage(from, text) {
+// Direktori penyimpanan Voice Notes
+const vnDir = path.join(__dirname, 'voice_notes');
+if (!fs.existsSync(vnDir)) fs.mkdirSync(vnDir, { recursive: true });
+
+function addGroupMessage(from, text, type = 'text', audioFile = null) {
   const now = new Date();
   const time = now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
   const msg = {
     id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
     from,
     text,
+    type,
+    audioFile,
     time
   };
-  chatAdikMessages.push(msg);
-  saveChatAdik();
+  chatGroupMessages.push(msg);
+  saveChatGroup();
   return msg;
+}
+
+// Resolusi nama anggota dari nomor WA
+function getMemberName(jid) {
+  const num = jid.replace('@s.whatsapp.net', '').replace('@g.us', '');
+  if (config.chatMembers && config.chatMembers[num]) {
+    return config.chatMembers[num].name;
+  }
+  return null;
+}
+
+function getMemberKey(jid) {
+  const num = jid.replace('@s.whatsapp.net', '');
+  if (config.chatMembers && config.chatMembers[num]) {
+    return config.chatMembers[num].name.toLowerCase();
+  }
+  return null;
+}
+
+function isBotOwner(jid) {
+  if (!sock?.user?.id) return false;
+  const ownNum = sock.user.id.split(':')[0];
+  const senderNum = jid.replace('@s.whatsapp.net', '');
+  return senderNum === ownNum;
 }
 
 function notifyUbuntuDesktop(title, body) {
   if (process.platform === 'linux') {
     const cleanTitle = title.replace(/"/g, '\\"');
     const cleanBody = body.replace(/"/g, '\\"');
-    exec(`notify-send -a "Chat Mas Fando" "${cleanTitle}" "${cleanBody}"`, err => {
+    exec(`notify-send -a "Turu Lee Chat" "${cleanTitle}" "${cleanBody}"`, err => {
       if (err) console.error('notify-send error:', err.message);
     });
   }
@@ -111,7 +158,7 @@ function escapeTgHtml(str) {
     .replace(/>/g, '&gt;');
 }
 
-function sendTelegramNotification(message) {
+function sendTelegramNotification(senderName, message) {
   if (!config.tgBotToken || !config.tgChatId) {
     console.log('[Telegram] Tidak dikirim karena tgBotToken atau tgChatId belum diisi.');
     return;
@@ -119,7 +166,7 @@ function sendTelegramNotification(message) {
 
   const tgData = JSON.stringify({
     chat_id: String(config.tgChatId),
-    text: `💬 <b>[Pesan dari Enat]:</b>\n"${escapeTgHtml(message)}"\n\n<i>Ketik balasan langsung di sini untuk membalas</i>`,
+    text: `💬 <b>[Turu Lee — ${escapeTgHtml(senderName)}]:</b>\n"${escapeTgHtml(message)}"\n\n<i>Ketik balasan langsung di sini</i>`,
     parse_mode: 'HTML'
   });
 
@@ -141,7 +188,7 @@ function sendTelegramNotification(message) {
         try {
           const json = JSON.parse(body);
           if (json.ok) {
-            console.log('[Telegram] Notifikasi pesan Enat berhasil dikirim ke Mas Fando!');
+            console.log(`[Telegram] Notifikasi dari ${senderName} berhasil dikirim!`);
           } else {
             console.error('[Telegram] Gagal kirim notif:', json.description);
           }
@@ -189,7 +236,6 @@ function startTelegramPolling() {
   tgPollingActive = true;
   console.log('[Telegram Polling] Mendengarkan balasan chat dari Mas Fando di Telegram...');
 
-  // Hapus webhook jika pernah ada agar getUpdates berfungsi lancar
   try {
     const delReq = https.request({
       hostname: 'api.telegram.org',
@@ -239,21 +285,27 @@ function startTelegramPolling() {
                 const m = update.message;
                 if (!m || !m.text) continue;
 
-                // Pastikan hanya pesan dari Mas Fando (Chat ID sesuai)
                 if (String(m.chat.id) !== String(config.tgChatId)) continue;
 
                 const text = m.text.trim();
                 if (text === '/start') {
-                  sendTelegramAck(m.chat.id, '👋 <b>Halo Mas Fando!</b>\nBot sudah aktif. Ketik apa saja langsung di sini (tanpa awalan apapun), dan pesanmu akan langsung masuk ke layar laptop Enat!');
+                  sendTelegramAck(m.chat.id, '👋 <b>Halo Mas Fando!</b>\nBot Turu Lee sudah aktif. Ketik apa saja langsung di sini, dan pesanmu akan masuk ke grup Turu Lee dan laptop Enat!');
                   continue;
                 }
 
-                // Teruskan langsung ke laptop Enat tanpa perlu awalan apapun!
-                addAdikMessage('mas', text);
+                // Teruskan ke chat grup dan laptop Enat
+                addGroupMessage('mas', text);
                 notifyUbuntuDesktop('Pesan dari Mas Fando', text);
 
-                // Kirim konfirmasi balik ke Telegram
-                sendTelegramAck(m.chat.id, `✅ <b>Terkirim ke Enat:</b>\n"${escapeTgHtml(text)}"`);
+                // Kirim juga ke WA Grup Turu Lee agar semua anggota baca
+                if (sock && config.chatGroupId) {
+                  sock.sendMessage(config.chatGroupId, {
+                    text: `💬 *[Mas Fando via Telegram]:*\n"${text}"`
+                  }).then(sent => { if (sent?.key?.id) markSeen(sent.key.id); })
+                    .catch(() => {});
+                }
+
+                sendTelegramAck(m.chat.id, `✅ <b>Terkirim ke Turu Lee:</b>\n"${escapeTgHtml(text)}"`);
               }
             }
           } catch (e) {}
@@ -284,7 +336,6 @@ function sendPushNotification(title, message) {
   const topic = config.ntfyTopic || 'fando-pesan-adik-2026';
   const postData = Buffer.from(message, 'utf8');
 
-  // Kirim ke server ntfy (adminforge & ntfy.sh)
   const servers = ['ntfy.adminforge.de', 'ntfy.sh'];
   servers.forEach(hostname => {
     try {
@@ -323,19 +374,19 @@ const PORT = process.env.PORT || 3000;
 const server = http.createServer((req, res) => {
   const url = req.url || '/';
 
-  // 1. Health check untuk UptimeRobot
+  // 1. Health check
   if (url === '/health' || url === '/ping') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     return res.end('OK');
   }
 
-  // 2. API Chat Adik: Ambil riwayat chat
+  // 2. API Chat Grup: Ambil riwayat chat
   if (url === '/api/pesan' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify(chatAdikMessages));
+    return res.end(JSON.stringify(chatGroupMessages));
   }
 
-  // 3. API Chat Adik: Kirim pesan dari laptop adik ke WhatsApp Mas Fando
+  // 3. API Chat Grup: Kirim pesan teks dari laptop Enat ke WA grup Turu Lee
   if (url === '/api/kirim-pesan' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
@@ -348,24 +399,23 @@ const server = http.createServer((req, res) => {
           return res.end(JSON.stringify({ error: 'Pesan tidak boleh kosong' }));
         }
 
-        const newMsg = addAdikMessage('enat', text);
+        const newMsg = addGroupMessage('enat', text);
 
-        // 1. Kirim Notifikasi ke Telegram Mas Fando (dijamin 100% berbunyi & muncul pop-up)
-        sendTelegramNotification(text);
+        // 1. Kirim Notifikasi ke Telegram Mas Fando
+        sendTelegramNotification('Enat', text);
 
-        // 2. Kirim juga Push Notification (ntfy)
-        sendPushNotification('Pesan Baru dari Enat', text);
+        // 2. Kirim Push Notification (ntfy)
+        sendPushNotification('Turu Lee — Enat', text);
 
-        // 3. Kirim WhatsApp ke grup atau nomor pribadi Mas Fando
-        const target = config.targetGroupId || (sock?.user?.id ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : null);
-        if (sock && target) {
+        // 3. Kirim ke grup WA "Turu Lee"
+        if (sock && config.chatGroupId) {
           try {
-            const sent = await sock.sendMessage(target, {
-              text: `💬 *[Pesan dari Enat]:*\n"${text}"\n\n_Balas dengan: .enat <pesanmu>_`
+            const sent = await sock.sendMessage(config.chatGroupId, {
+              text: `💬 *[Enat dari Laptop]:*\n"${text}"`
             });
             if (sent?.key?.id) markSeen(sent.key.id);
           } catch (err) {
-            console.error('Gagal kirim WA ke Mas Fando:', err.message);
+            console.error('Gagal kirim WA ke Turu Lee:', err.message);
           }
         }
 
@@ -379,20 +429,80 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 4. API Test Notifikasi Telegram Mas Fando
+  // 3b. API: Kirim Voice Note dari laptop Enat
+  if (url === '/api/kirim-vn' && req.method === 'POST') {
+    const chunks = [];
+    req.on('data', chunk => { chunks.push(chunk); });
+    req.on('end', async () => {
+      try {
+        const rawBody = Buffer.concat(chunks);
+        // Expect multipart or raw audio; we'll handle raw OGG/WebM from browser MediaRecorder
+        const vnFilename = 'vn_enat_' + Date.now() + '.ogg';
+        const vnPath = path.join(vnDir, vnFilename);
+        fs.writeFileSync(vnPath, rawBody);
+
+        const newMsg = addGroupMessage('enat', '🎤 Voice Note', 'audio', vnFilename);
+
+        // Kirim VN ke WA Grup Turu Lee sebagai audio message
+        if (sock && config.chatGroupId) {
+          try {
+            const sent = await sock.sendMessage(config.chatGroupId, {
+              audio: rawBody,
+              mimetype: 'audio/ogg; codecs=opus',
+              ptt: true
+            });
+            if (sent?.key?.id) markSeen(sent.key.id);
+          } catch (err) {
+            console.error('Gagal kirim VN ke WA:', err.message);
+          }
+        }
+
+        // Notif ke Telegram
+        sendTelegramNotification('Enat', '🎤 [Voice Note]');
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, message: newMsg }));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // 3c. API: Serve voice note audio files
+  if (url.startsWith('/api/vn/')) {
+    const filename = decodeURIComponent(url.replace('/api/vn/', ''));
+    const filePath = path.join(vnDir, filename);
+    if (fs.existsSync(filePath)) {
+      const stat = fs.statSync(filePath);
+      res.writeHead(200, {
+        'Content-Type': 'audio/ogg',
+        'Content-Length': stat.size,
+        'Cache-Control': 'public, max-age=86400'
+      });
+      fs.createReadStream(filePath).pipe(res);
+    } else {
+      res.writeHead(404);
+      res.end('Not found');
+    }
+    return;
+  }
+
+  // 4. API Test Notifikasi Telegram
   if (url === '/api/test-tg') {
     if (!config.tgBotToken) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ error: 'tgBotToken belum diatur di config.json' }));
+      return res.end(JSON.stringify({ error: 'tgBotToken belum diatur' }));
     }
-    sendTelegramNotification('Halo Mas Fando! Notifikasi Telegram berhasil terhubung dan siap dipakai.');
+    sendTelegramNotification('System', 'Halo Mas Fando! Notifikasi Telegram berhasil terhubung.');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ success: true, tgChatId: config.tgChatId }));
   }
 
-  // 4. API Test Notifikasi HP Kakak
+  // 4b. API Test Notifikasi ntfy
   if (url === '/api/test-notif') {
-    sendPushNotification('Test Notifikasi HP', 'Halo Kak Fando! Notifikasi ntfy berhasil terhubung.');
+    sendPushNotification('Test Turu Lee', 'Halo Mas Fando! Notifikasi ntfy berhasil terhubung.');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({
       success: true,
@@ -401,163 +511,13 @@ const server = http.createServer((req, res) => {
     }));
   }
 
-  // 5. Halaman Web Chat Privat Adik (http://localhost:3000/pesan)
+  // 5. Halaman Web Chat Grup "Turu Lee" (http://localhost:3000/pesan)
   if (url === '/pesan' || url === '/chat') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    return res.end(`
-      <!DOCTYPE html>
-      <html lang="id">
-      <head>
-        <meta charset="utf-8">
-        <title>Chat Mas Fando</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-        <style>
-          * { box-sizing: border-box; margin: 0; padding: 0; }
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #0b141a; color: #e9edef; height: 100vh; display: flex; justify-content: center; }
-          .chat-container { width: 100%; max-width: 500px; height: 100vh; display: flex; flex-direction: column; background: #111b21; border-left: 1px solid #202c33; border-right: 1px solid #202c33; }
-          .header { background: #202c33; padding: 14px 18px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); }
-          .avatar { width: 42px; height: 42px; border-radius: 50%; background: #00a884; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: #fff; }
-          .header-info h2 { font-size: 16px; font-weight: 600; color: #e9edef; }
-          .header-info p { font-size: 12px; color: #25d366; display: flex; align-items: center; gap: 5px; }
-          .dot { width: 7px; height: 7px; background: #25d366; border-radius: 50%; }
-          .messages-box { flex: 1; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; background-color: #0b141a; background-image: radial-gradient(#1f2c34 1px, transparent 1px); background-size: 20px 20px; }
-          .bubble-row { display: flex; width: 100%; }
-          .bubble-row.enat, .bubble-row.adik { justify-content: flex-end; }
-          .bubble-row.kakak, .bubble-row.mas { justify-content: flex-start; }
-          .bubble { max-width: 78%; padding: 9px 13px; border-radius: 12px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; position: relative; }
-          .bubble.enat, .bubble.adik { background: #005c4b; color: #e9edef; border-bottom-right-radius: 2px; }
-          .bubble.kakak, .bubble.mas { background: #202c33; color: #e9edef; border-bottom-left-radius: 2px; }
-          .sender-name { font-size: 11px; font-weight: 600; margin-bottom: 3px; color: #25d366; }
-          .bubble.enat .sender-name, .bubble.adik .sender-name { color: #53bdeb; }
-          .msg-time { font-size: 10px; color: rgba(255,255,255,0.55); float: right; margin-left: 10px; margin-top: 4px; }
-          .input-bar { background: #202c33; padding: 12px; display: flex; gap: 10px; align-items: center; }
-          .input-box { flex: 1; background: #2a3942; border: none; outline: none; border-radius: 24px; padding: 12px 18px; color: #fff; font-size: 15px; }
-          .input-box::placeholder { color: #8696a0; }
-          .btn-send { background: #00a884; border: none; border-radius: 50%; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #fff; font-size: 18px; transition: 0.2s; shrink: 0; }
-          .btn-send:hover { background: #029071; }
-          .btn-send:active { transform: scale(0.95); }
-        </style>
-      </head>
-      <body>
-        <div class="chat-container">
-          <div class="header">
-            <div class="avatar">M</div>
-            <div class="header-info">
-              <h2>Mas Fando</h2>
-              <p><span class="dot"></span> Online via WhatsApp</p>
-            </div>
-          </div>
-
-          <div class="messages-box" id="msgBox">
-            <div style="text-align: center; color: #8696a0; font-size: 12px; margin: 15px 0;">
-              🔒 Pesan ini langsung terkirim ke WhatsApp Mas Fando secara aman.
-            </div>
-          </div>
-
-          <form class="input-bar" id="chatForm" onsubmit="kirimPesan(event)">
-            <input type="text" id="inputMsg" class="input-box" placeholder="Ketik pesan untuk Mas Fando..." autocomplete="off" />
-            <button type="submit" class="btn-send" id="sendBtn">➤</button>
-          </form>
-        </div>
-
-        <script>
-          let lastCount = 0;
-
-          // Suara notifikasi lembut via Web Audio API
-          function playDing() {
-            try {
-              const ctx = new (window.AudioContext || window.webkitAudioContext)();
-              const osc = ctx.createOscillator();
-              const gain = ctx.createGain();
-              osc.connect(gain);
-              gain.connect(ctx.destination);
-              osc.type = 'sine';
-              osc.frequency.setValueAtTime(587.33, ctx.currentTime);
-              osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15);
-              gain.gain.setValueAtTime(0.25, ctx.currentTime);
-              gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
-              osc.start();
-              osc.stop(ctx.currentTime + 0.35);
-            } catch(e) {}
-          }
-
-          if (window.Notification && Notification.permission !== 'granted') {
-            Notification.requestPermission();
-          }
-
-          async function muatPesan() {
-            try {
-              const res = await fetch('/api/pesan');
-              const msgs = await res.json();
-              if (msgs.length > lastCount) {
-                // Ada pesan baru dari Mas Fando
-                if (lastCount > 0) {
-                  const newest = msgs[msgs.length - 1];
-                  if (newest.from === 'kakak' || newest.from === 'mas') {
-                    playDing();
-                    if (window.Notification && Notification.permission === 'granted') {
-                      new Notification('Pesan dari Mas Fando', { body: newest.text });
-                    }
-                  }
-                }
-                lastCount = msgs.length;
-                renderMessages(msgs);
-              }
-            } catch(e) {}
-          }
-
-          function renderMessages(msgs) {
-            const box = document.getElementById('msgBox');
-            box.innerHTML = '<div style="text-align: center; color: #8696a0; font-size: 12px; margin: 15px 0;">🔒 Pesan ini langsung terkirim ke WhatsApp Mas Fando secara aman.</div>';
-            msgs.forEach(m => {
-              const row = document.createElement('div');
-              row.className = 'bubble-row ' + m.from;
-              row.innerHTML = \`
-                <div class="bubble \${m.from}">
-                  <div class="sender-name">\${(m.from === 'enat' || m.from === 'adik') ? 'Enat' : 'Mas Fando'}</div>
-                  <span class="text">\${escapeHtml(m.text)}</span>
-                  <span class="msg-time">\${m.time}</span>
-                </div>
-              \`;
-              box.appendChild(row);
-            });
-            box.scrollTop = box.scrollHeight;
-          }
-
-          function escapeHtml(t) {
-            const div = document.createElement('div');
-            div.textContent = t;
-            return div.innerHTML;
-          }
-
-          async function kirimPesan(e) {
-            e.preventDefault();
-            const input = document.getElementById('inputMsg');
-            const text = input.value.trim();
-            if (!text) return;
-            input.value = '';
-
-            try {
-              await fetch('/api/kirim-pesan', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text })
-              });
-              muatPesan();
-            } catch(e) {
-              alert('Gagal mengirim pesan');
-            }
-          }
-
-          setInterval(muatPesan, 1500);
-          muatPesan();
-        </script>
-      </body>
-      </html>
-    `);
+    return res.end(getChatHTML());
   }
 
-  // 5. Halaman Scan QR Code di Browser (/qr)
+  // 6. Halaman Scan QR Code di Browser (/qr)
   if (url === '/qr') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if (isConnected) {
@@ -573,14 +533,15 @@ const server = http.createServer((req, res) => {
             .badge { display: inline-flex; align-items: center; gap: 8px; background: rgba(37,211,102,0.15); color: #25d366; padding: 8px 16px; border-radius: 99px; font-weight: 600; font-size: 14px; margin-bottom: 16px; }
             h1 { font-size: 22px; margin: 0 0 12px 0; color: #fff; }
             p { font-size: 14px; color: #8696a0; line-height: 1.6; margin: 0; }
+            a { color: #25d366; text-decoration: none; font-weight: 600; }
           </style>
         </head>
         <body>
           <div class="card">
             <div class="badge">● Online 24 Jam</div>
             <h1>✅ WhatsApp Terhubung!</h1>
-            <p>Bot Keuanganku aktif dan siap digunakan di grup <b>"${config.targetGroupName}"</b>.</p>
-            <p style="margin-top: 15px;"><a href="/pesan" style="color: #25d366; text-decoration: none; font-weight: 600;">👉 Buka Halaman Chat Adik</a></p>
+            <p>Bot aktif di grup <b>"${config.targetGroupName}"</b> (keuangan) dan <b>"${config.chatGroupName}"</b> (obrolan).</p>
+            <p style="margin-top: 15px;"><a href="/pesan">👉 Buka Turu Lee Chat</a></p>
           </div>
         </body>
         </html>
@@ -598,21 +559,17 @@ const server = http.createServer((req, res) => {
           <style>
             body { font-family: sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #0b141a; color: #e9edef; text-align: center; }
             .card { background: #111b21; padding: 28px; border-radius: 24px; border: 1px solid #202c33; max-width: 380px; }
-            h1 { font-size: 20px; margin: 0 0 8px 0; color: #fff; }
-            p { font-size: 13px; color: #8696a0; margin: 0 0 20px 0; line-height: 1.5; }
-            .qr-box { background: #fff; padding: 16px; border-radius: 16px; display: inline-block; margin-bottom: 16px; }
-            img { display: block; width: 240px; height: 240px; }
-            .hint { font-size: 12px; color: #00a884; }
+            img { width: 280px; height: 280px; border-radius: 12px; margin: 16px 0; }
+            h1 { font-size: 20px; margin: 0 0 8px 0; }
+            p { font-size: 13px; color: #8696a0; line-height: 1.5; }
           </style>
         </head>
         <body>
           <div class="card">
-            <h1>Tautkan WhatsApp</h1>
-            <p>Buka WhatsApp di HP &gt; Titik 3 / Setelan &gt; <b>Perangkat Tertaut</b> &gt; <b>Tautkan Perangkat</b> lalu scan:</p>
-            <div class="qr-box">
-              <img src="${currentQrDataUrl}" alt="QR Code WhatsApp" />
-            </div>
-            <div class="hint">Halaman ini otomatis me-refresh jika ada QR baru.</div>
+            <h1>📱 Scan QR Code</h1>
+            <p>Buka WhatsApp → ⋮ → Perangkat tertaut → Tautkan perangkat</p>
+            <img src="${currentQrDataUrl}" alt="QR Code" />
+            <p>Halaman akan otomatis refresh setiap 8 detik.</p>
           </div>
         </body>
         </html>
@@ -623,38 +580,323 @@ const server = http.createServer((req, res) => {
       <!DOCTYPE html>
       <html>
       <head>
-        <title>Memuat QR Code...</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <meta http-equiv="refresh" content="3">
-        <style>
-          body { font-family: sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #0b141a; color: #e9edef; text-align: center; }
-        </style>
+        <title>Bot Keuanganku</title>
+        <meta http-equiv="refresh" content="5">
+        <style>body { font-family: sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #0b141a; color: #e9edef; text-align: center; }</style>
       </head>
-      <body>
-        <div>
-          <h2>Menyiapkan QR Code WhatsApp...</h2>
-          <p style="color: #8696a0;">Halaman akan otomatis memuat dalam beberapa detik.</p>
-        </div>
-      </body>
+      <body><p>⏳ Menunggu QR Code... Halaman akan otomatis refresh.</p></body>
       </html>
     `);
   }
 
-  // 6. Status JSON default
+  // 7. Status JSON default
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({
     status: 'online',
     connected: isConnected,
-    group: config.targetGroupName,
-    groupId: config.targetGroupId,
-    chatAdikUrl: '/pesan',
+    financeGroup: config.targetGroupName,
+    financeGroupId: config.targetGroupId,
+    chatGroup: config.chatGroupName,
+    chatGroupId: config.chatGroupId,
+    chatUrl: '/pesan',
     qrUrl: '/qr'
   }, null, 2));
 });
 
+// ==========================================
+// HTML Halaman Chat Grup "Turu Lee"
+// ==========================================
+function getChatHTML() {
+  // Bangun daftar anggota untuk CSS warna
+  const memberColors = {};
+  if (config.chatMembers) {
+    for (const [num, info] of Object.entries(config.chatMembers)) {
+      memberColors[info.name.toLowerCase()] = info.color || '#ff6b6b';
+    }
+  }
+  memberColors['mas'] = '#25d366';
+  memberColors['enat'] = '#53bdeb';
+
+  const memberColorsJson = JSON.stringify(memberColors);
+
+  // Bangun map nama tampilan
+  const displayNames = { mas: 'Mas Fando', enat: 'Enat' };
+  if (config.chatMembers) {
+    for (const [num, info] of Object.entries(config.chatMembers)) {
+      displayNames[info.name.toLowerCase()] = info.name;
+    }
+  }
+  const displayNamesJson = JSON.stringify(displayNames);
+
+  return `
+    <!DOCTYPE html>
+    <html lang="id">
+    <head>
+      <meta charset="utf-8">
+      <title>Turu Lee Chat</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+      <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #0b141a; color: #e9edef; height: 100vh; display: flex; justify-content: center; }
+        .chat-container { width: 100%; max-width: 500px; height: 100vh; display: flex; flex-direction: column; background: #111b21; border-left: 1px solid #202c33; border-right: 1px solid #202c33; }
+        .header { background: #202c33; padding: 14px 18px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+        .avatar-group { display: flex; gap: -8px; }
+        .avatar { width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: bold; color: #fff; border: 2px solid #202c33; }
+        .avatar.a1 { background: #25d366; }
+        .avatar.a2 { background: #53bdeb; margin-left: -10px; }
+        .avatar.a3 { background: #ff6b6b; margin-left: -10px; }
+        .header-info h2 { font-size: 16px; font-weight: 600; color: #e9edef; }
+        .header-info p { font-size: 12px; color: #8696a0; }
+        .members-tag { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+        .tag { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+        .messages-box { flex: 1; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; background-color: #0b141a; background-image: radial-gradient(#1f2c34 1px, transparent 1px); background-size: 20px 20px; }
+        .bubble-row { display: flex; width: 100%; }
+        .bubble-row.enat { justify-content: flex-end; }
+        .bubble-row.mas, .bubble-row.eisss { justify-content: flex-start; }
+        .bubble { max-width: 78%; padding: 9px 13px; border-radius: 12px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; position: relative; }
+        .bubble.enat { background: #005c4b; color: #e9edef; border-bottom-right-radius: 2px; }
+        .bubble.mas { background: #202c33; color: #e9edef; border-bottom-left-radius: 2px; }
+        .bubble.eisss { background: #2d1f2f; color: #e9edef; border-bottom-left-radius: 2px; }
+        .sender-name { font-size: 11px; font-weight: 600; margin-bottom: 3px; }
+        .msg-time { font-size: 10px; color: rgba(255,255,255,0.55); float: right; margin-left: 10px; margin-top: 4px; }
+        .input-bar { background: #202c33; padding: 12px; display: flex; gap: 10px; align-items: center; }
+        .input-box { flex: 1; background: #2a3942; border: none; outline: none; border-radius: 24px; padding: 12px 18px; color: #fff; font-size: 15px; }
+        .input-box::placeholder { color: #8696a0; }
+        .btn-send { background: #00a884; border: none; border-radius: 50%; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #fff; font-size: 18px; transition: 0.2s; flex-shrink: 0; }
+        .btn-send:hover { background: #029071; }
+        .btn-send:active { transform: scale(0.95); }
+        .btn-mic { background: transparent; border: 2px solid #00a884; border-radius: 50%; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #00a884; font-size: 20px; transition: 0.2s; flex-shrink: 0; }
+        .btn-mic:hover { background: rgba(0,168,132,0.1); }
+        .btn-mic.recording { background: #e53935; border-color: #e53935; color: #fff; animation: pulse-rec 1s ease-in-out infinite; }
+        @keyframes pulse-rec {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.1); }
+        }
+        .audio-player { width: 100%; max-width: 240px; height: 36px; border-radius: 18px; }
+        .rec-indicator { display: none; color: #e53935; font-size: 12px; font-weight: 600; padding: 0 8px; align-items: center; gap: 4px; }
+        .rec-indicator.active { display: flex; }
+        .rec-dot { width: 8px; height: 8px; background: #e53935; border-radius: 50%; animation: blink 1s infinite; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+      </style>
+    </head>
+    <body>
+      <div class="chat-container">
+        <div class="header">
+          <div class="avatar-group">
+            <div class="avatar a1">F</div>
+            <div class="avatar a2">E</div>
+            <div class="avatar a3">I</div>
+          </div>
+          <div class="header-info">
+            <h2>🌙 Turu Lee</h2>
+            <div class="members-tag">
+              <span class="tag" style="background: rgba(37,211,102,0.15); color: #25d366;">Mas Fando</span>
+              <span class="tag" style="background: rgba(83,189,235,0.15); color: #53bdeb;">Enat</span>
+              <span class="tag" style="background: rgba(255,107,107,0.15); color: #ff6b6b;">Eisss</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="messages-box" id="msgBox">
+          <div style="text-align: center; color: #8696a0; font-size: 12px; margin: 15px 0;">
+            🌙 Selamat datang di Turu Lee! Obrolan keluarga yang aman dan privat.
+          </div>
+        </div>
+
+        <form class="input-bar" id="chatForm" onsubmit="kirimPesan(event)">
+          <button type="button" class="btn-mic" id="btnMic" onclick="toggleRecord()" title="Voice Note">🎤</button>
+          <div class="rec-indicator" id="recInd"><div class="rec-dot"></div><span id="recTimer">0:00</span></div>
+          <input type="text" id="inputMsg" class="input-box" placeholder="Ketik pesan..." autocomplete="off" />
+          <button type="submit" class="btn-send" id="sendBtn">➤</button>
+        </form>
+      </div>
+
+      <script>
+        const MEMBER_COLORS = ${memberColorsJson};
+        const DISPLAY_NAMES = ${displayNamesJson};
+        let lastCount = 0;
+
+        // Suara notifikasi
+        function playDing() {
+          try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15);
+            gain.gain.setValueAtTime(0.25, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.35);
+          } catch(e) {}
+        }
+
+        if (window.Notification && Notification.permission !== 'granted') {
+          Notification.requestPermission();
+        }
+
+        async function muatPesan() {
+          try {
+            const res = await fetch('/api/pesan');
+            const msgs = await res.json();
+            if (msgs.length > lastCount) {
+              if (lastCount > 0) {
+                const newest = msgs[msgs.length - 1];
+                if (newest.from !== 'enat') {
+                  playDing();
+                  const senderDisplay = DISPLAY_NAMES[newest.from] || newest.from;
+                  if (window.Notification && Notification.permission === 'granted') {
+                    new Notification('Turu Lee — ' + senderDisplay, { body: newest.type === 'audio' ? '🎤 Voice Note' : newest.text });
+                  }
+                }
+              }
+              lastCount = msgs.length;
+              renderMessages(msgs);
+            }
+          } catch(e) {}
+        }
+
+        function renderMessages(msgs) {
+          const box = document.getElementById('msgBox');
+          box.innerHTML = '<div style="text-align: center; color: #8696a0; font-size: 12px; margin: 15px 0;">🌙 Selamat datang di Turu Lee! Obrolan keluarga yang aman dan privat.</div>';
+          msgs.forEach(m => {
+            const row = document.createElement('div');
+            const fromKey = m.from.toLowerCase();
+            row.className = 'bubble-row ' + fromKey;
+            const senderColor = MEMBER_COLORS[fromKey] || '#8696a0';
+            const senderDisplay = DISPLAY_NAMES[fromKey] || m.from;
+
+            let contentHtml = '';
+            if (m.type === 'audio' && m.audioFile) {
+              contentHtml = '<audio controls class="audio-player" preload="none"><source src="/api/vn/' + encodeURIComponent(m.audioFile) + '" type="audio/ogg"></audio>';
+            } else {
+              contentHtml = '<span class="text">' + escapeHtml(m.text) + '</span>';
+            }
+
+            row.innerHTML =
+              '<div class="bubble ' + fromKey + '">' +
+                '<div class="sender-name" style="color: ' + senderColor + ';">' + escapeHtml(senderDisplay) + '</div>' +
+                contentHtml +
+                '<span class="msg-time">' + m.time + '</span>' +
+              '</div>';
+            box.appendChild(row);
+          });
+          box.scrollTop = box.scrollHeight;
+        }
+
+        function escapeHtml(t) {
+          const div = document.createElement('div');
+          div.textContent = t;
+          return div.innerHTML;
+        }
+
+        async function kirimPesan(e) {
+          e.preventDefault();
+          const input = document.getElementById('inputMsg');
+          const text = input.value.trim();
+          if (!text) return;
+          input.value = '';
+
+          try {
+            await fetch('/api/kirim-pesan', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text })
+            });
+            muatPesan();
+          } catch(e) {
+            alert('Gagal mengirim pesan');
+          }
+        }
+
+        // ==========================================
+        // Voice Note Recording
+        // ==========================================
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+        let recStartTime = 0;
+        let recTimerInterval = null;
+
+        async function toggleRecord() {
+          if (isRecording) {
+            stopRecord();
+          } else {
+            startRecord();
+          }
+        }
+
+        async function startRecord() {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+            audioChunks = [];
+
+            mediaRecorder.ondataavailable = e => {
+              if (e.data.size > 0) audioChunks.push(e.data);
+            };
+
+            mediaRecorder.onstop = async () => {
+              stream.getTracks().forEach(t => t.stop());
+              const blob = new Blob(audioChunks, { type: 'audio/ogg' });
+              if (blob.size > 500) {
+                try {
+                  await fetch('/api/kirim-vn', {
+                    method: 'POST',
+                    body: blob
+                  });
+                  muatPesan();
+                } catch(err) {
+                  alert('Gagal mengirim voice note');
+                }
+              }
+            };
+
+            mediaRecorder.start();
+            isRecording = true;
+            recStartTime = Date.now();
+            document.getElementById('btnMic').classList.add('recording');
+            document.getElementById('inputMsg').style.display = 'none';
+            const recInd = document.getElementById('recInd');
+            recInd.classList.add('active');
+
+            recTimerInterval = setInterval(() => {
+              const elapsed = Math.floor((Date.now() - recStartTime) / 1000);
+              const min = Math.floor(elapsed / 60);
+              const sec = elapsed % 60;
+              document.getElementById('recTimer').textContent = min + ':' + String(sec).padStart(2, '0');
+            }, 500);
+          } catch(e) {
+            alert('Tidak bisa merekam. Pastikan izin mikrofon diberikan.');
+          }
+        }
+
+        function stopRecord() {
+          if (mediaRecorder && mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+          }
+          isRecording = false;
+          clearInterval(recTimerInterval);
+          document.getElementById('btnMic').classList.remove('recording');
+          document.getElementById('inputMsg').style.display = '';
+          document.getElementById('recInd').classList.remove('active');
+          document.getElementById('recTimer').textContent = '0:00';
+        }
+
+        setInterval(muatPesan, 1500);
+        muatPesan();
+      </script>
+    </body>
+    </html>
+  `;
+}
+
 server.listen(PORT, () => {
   console.log(`[Web Server] Aktif di port ${PORT}`);
-  console.log(`[Chat Enat] Buka http://localhost:${PORT}/pesan untuk chat khusus Enat`);
+  console.log(`[Turu Lee Chat] Buka http://localhost:${PORT}/pesan`);
   if (config.tgBotToken) {
     startTelegramPolling();
   }
@@ -746,30 +988,49 @@ async function startBot() {
     }
   });
 
+  // ==========================================
+  // Sinkronisasi Grup WA
+  // ==========================================
   async function syncGroups() {
     try {
       const groups = await sock.groupFetchAllParticipating();
       const groupList = Object.values(groups);
       console.log(`Ditemukan ${groupList.length} grup WhatsApp.`);
 
-      const found = groupList.find(g =>
+      // Cari grup keuangan "Duit Gua Tuh"
+      const financeGroup = groupList.find(g =>
         g.subject && g.subject.toLowerCase().includes(config.targetGroupName.toLowerCase())
       );
 
-      if (found) {
-        config.targetGroupId = found.id;
-        saveConfig();
-        console.log(`✅ Grup Keuangan Ditemukan: "${found.subject}" (ID: ${found.id})`);
-        console.log('Bot siap mendengarkan pesan di grup ini!\n');
+      if (financeGroup) {
+        config.targetGroupId = financeGroup.id;
+        console.log(`✅ Grup Keuangan: "${financeGroup.subject}" (ID: ${financeGroup.id})`);
       } else {
-        console.log(`⚠️ Belum menemukan grup bernama "${config.targetGroupName}".`);
-        console.log(`Ketik ".setgroup" di grup keuangan Anda untuk menghubungkannya secara manual.\n`);
+        console.log(`⚠️ Belum menemukan grup keuangan "${config.targetGroupName}".`);
       }
+
+      // Cari grup obrolan "Turu Lee"
+      const chatGroup = groupList.find(g =>
+        g.subject && g.subject.toLowerCase().includes(config.chatGroupName.toLowerCase())
+      );
+
+      if (chatGroup) {
+        config.chatGroupId = chatGroup.id;
+        console.log(`✅ Grup Obrolan: "${chatGroup.subject}" (ID: ${chatGroup.id})`);
+      } else {
+        console.log(`⚠️ Belum menemukan grup obrolan "${config.chatGroupName}".`);
+        console.log(`   Ketik ".setchat" di grup obrolan Anda untuk menghubungkannya.\n`);
+      }
+
+      saveConfig();
     } catch (err) {
       console.error('Gagal sinkronisasi grup:', err.message);
     }
   }
 
+  // ==========================================
+  // Handler Pesan Masuk
+  // ==========================================
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     for (const msg of messages) {
       if (!msg.message) continue;
@@ -780,27 +1041,32 @@ async function startBot() {
       const remoteJid = msg.key.remoteJid;
       const isGroup = remoteJid.endsWith('@g.us');
 
+      // Identifikasi pengirim di dalam grup
+      const senderJid = msg.key.participant || remoteJid;
+
       const rawText = msg.message.conversation ||
         msg.message.extendedTextMessage?.text ||
         msg.message.imageMessage?.caption ||
         '';
 
       const text = rawText.trim();
-      if (!text) continue;
 
-      // Abaikan pesan balasan dari bot sendiri agar tidak terjadi looping
-      if (
+      // Cek apakah pesan adalah audio/voice note
+      const audioMsg = msg.message.audioMessage;
+      const isVoiceNote = audioMsg && audioMsg.ptt;
+
+      // Abaikan pesan balasan dari bot sendiri
+      if (text && (
         /^[✅💰📊↩️⚠️•📖🤖💬]/.test(text) ||
         text.startsWith('Dompet default:') ||
         text.startsWith('Aku tidak menemukan') ||
         text.startsWith('Bagian ke-') ||
         text.startsWith('Peringatan:') ||
         text.startsWith('Dibatalkan:')
-      ) {
+      )) {
         continue;
       }
 
-      // Helper untuk kirim balasan sekaligus menandai ID pesan agar tidak diproses balik
       const replyMessage = async (jid, content) => {
         try {
           const sent = await sock.sendMessage(jid, content);
@@ -811,6 +1077,142 @@ async function startBot() {
         }
       };
 
+      // ==========================================
+      // GRUP OBROLAN "TURU LEE"
+      // ==========================================
+      const isChatGroup = isGroup && (
+        (config.chatGroupId && remoteJid === config.chatGroupId) ||
+        false
+      );
+
+      // Perintah .setchat untuk menghubungkan grup obrolan
+      if (isGroup && text.toLowerCase() === '.setchat') {
+        config.chatGroupId = remoteJid;
+        try {
+          const meta = await sock.groupMetadata(remoteJid);
+          if (meta.subject) config.chatGroupName = meta.subject;
+        } catch (e) {}
+        saveConfig();
+        await replyMessage(remoteJid, {
+          text: `✅ *Grup ini terhubung sebagai Turu Lee Chat!*\nSemua pesan di sini akan muncul di layar laptop Enat.\nSemua anggota bisa ngobrol langsung tanpa awalan apapun!`
+        });
+        continue;
+      }
+
+      // Cek apakah ini pesan dari grup Turu Lee (bukan dari bot sendiri)
+      if (isChatGroup) {
+        const senderIsBotOwner = isBotOwner(senderJid);
+
+        // Deteksi Voice Note dari WA → simpan dan tampilkan di web
+        if (isVoiceNote) {
+          try {
+            const buffer = await downloadMediaMessage(msg, 'buffer', {});
+            const vnFilename = 'vn_wa_' + Date.now() + '.ogg';
+            const vnPath = path.join(vnDir, vnFilename);
+            fs.writeFileSync(vnPath, buffer);
+
+            let senderName = 'Mas Fando';
+            let senderKey = 'mas';
+            if (!senderIsBotOwner) {
+              const memberName = getMemberName(senderJid);
+              if (memberName) {
+                senderName = memberName;
+                senderKey = memberName.toLowerCase();
+              } else {
+                senderName = senderJid.replace('@s.whatsapp.net', '');
+                senderKey = senderName;
+              }
+            }
+
+            addGroupMessage(senderKey, '🎤 Voice Note', 'audio', vnFilename);
+            notifyUbuntuDesktop(`VN dari ${senderName}`, '🎤 Voice Note baru');
+
+            if (!senderIsBotOwner) {
+              sendTelegramNotification(senderName, '🎤 [Voice Note]');
+            }
+          } catch (err) {
+            console.error('Gagal download VN:', err.message);
+          }
+          continue;
+        }
+
+        // Pesan teks dari WA Turu Lee → simpan ke chat dan notif
+        if (text && !text.startsWith('.')) {
+          let senderName = 'Mas Fando';
+          let senderKey = 'mas';
+          if (!senderIsBotOwner) {
+            const memberName = getMemberName(senderJid);
+            if (memberName) {
+              senderName = memberName;
+              senderKey = memberName.toLowerCase();
+            } else {
+              senderName = senderJid.replace('@s.whatsapp.net', '');
+              senderKey = senderName;
+            }
+          }
+
+          addGroupMessage(senderKey, text);
+          notifyUbuntuDesktop(`Pesan dari ${senderName}`, text);
+
+          // Jika bukan Mas Fando, notif ke Telegram
+          if (!senderIsBotOwner) {
+            sendTelegramNotification(senderName, text);
+          }
+        }
+
+        // Pesan dengan awalan "." di grup chat tetap bisa diproses sebagai command
+        if (text && text.startsWith('.')) {
+          // Cek apakah ini perintah balas ke web chat (.enat)
+          const cleanText = text.replace(/^\./, '').trim();
+          const low = cleanText.toLowerCase();
+
+          if (low.startsWith('enat ') || low === 'enat' || low.startsWith('adik ') || low === 'adik') {
+            const balasan = cleanText.replace(/^(enat|adik)\s*/i, '').trim();
+            if (!balasan) {
+              await replyMessage(remoteJid, { text: 'Tulis pesan, contoh: *.enat Mas lagi di jalan*' });
+            } else {
+              addGroupMessage('mas', balasan);
+              notifyUbuntuDesktop('Pesan dari Mas Fando', balasan);
+              await replyMessage(remoteJid, { text: `✅ *Terkirim ke laptop Enat:*\n"${balasan}"` });
+            }
+          }
+
+          // Token bot telegram
+          if (low.startsWith('token ') || low.startsWith('settoken ')) {
+            const tkn = cleanText.replace(/^(settoken|token)\s*/i, '').trim();
+            if (tkn) {
+              config.tgBotToken = tkn;
+              saveConfig();
+              startTelegramPolling();
+              sendTelegramNotification('System', 'Halo Mas Fando! Bot Token Telegram berhasil disimpan dan Turu Lee siap!');
+              await replyMessage(remoteJid, { text: `✅ *Bot Token Telegram berhasil disimpan!*\nSekarang bisa balas langsung dari Telegram.` });
+            }
+          }
+        }
+
+        continue; // Pesan di Turu Lee sudah diproses, lanjut ke pesan berikut
+      }
+
+      // ==========================================
+      // Auto-detect grup Turu Lee berdasarkan nama jika belum di-set
+      // ==========================================
+      if (isGroup && !isChatGroup && !config.chatGroupId) {
+        try {
+          const meta = await sock.groupMetadata(remoteJid);
+          if (meta.subject && meta.subject.toLowerCase().includes(config.chatGroupName.toLowerCase())) {
+            config.chatGroupId = remoteJid;
+            saveConfig();
+            console.log(`✅ Grup Obrolan ditemukan otomatis: "${meta.subject}" (ID: ${remoteJid})`);
+            // Re-proses pesan ini sebagai pesan Turu Lee — skip untuk sekarang, pesan berikutnya akan terdeteksi
+          }
+        } catch (e) {}
+      }
+
+      // ==========================================
+      // GRUP KEUANGAN "DUIT GUA TUH"
+      // ==========================================
+
+      // Perintah setgroup
       if (isGroup && text.toLowerCase() === '.setgroup') {
         config.targetGroupId = remoteJid;
         saveConfig();
@@ -836,6 +1238,9 @@ async function startBot() {
         }
       }
 
+      if (!text) continue;
+
+      // Chat pribadi: hanya proses perintah (diawali ".")
       if (!isGroup && !text.startsWith('.')) {
         continue;
       }
@@ -845,14 +1250,14 @@ async function startBot() {
 
       try {
         // ==========================================
-        // Perintah Balas ke Enat: ".enat <pesan>" (atau ".adik <pesan>")
+        // Perintah Balas ke Enat: ".enat <pesan>"
         // ==========================================
         if (low.startsWith('enat ') || low === 'enat' || low.startsWith('adik ') || low === 'adik') {
           const balasan = cleanText.replace(/^(enat|adik)\s*/i, '').trim();
           if (!balasan) {
             await replyMessage(remoteJid, { text: 'Tulis pesan untuk Enat, contoh: *.enat Mas lagi di jalan*' });
           } else {
-            addAdikMessage('mas', balasan);
+            addGroupMessage('mas', balasan);
             notifyUbuntuDesktop('Pesan dari Mas Fando', balasan);
             await replyMessage(remoteJid, { text: `✅ *Terkirim ke laptop Enat:*\n"${balasan}"` });
           }
@@ -860,7 +1265,7 @@ async function startBot() {
         }
 
         // ==========================================
-        // Pengaturan Token Bot Telegram: ".token <bot_token>"
+        // Pengaturan Token Bot Telegram
         // ==========================================
         if (low.startsWith('token ') || low.startsWith('settoken ')) {
           const tkn = cleanText.replace(/^(settoken|token)\s*/i, '').trim();
@@ -868,14 +1273,14 @@ async function startBot() {
             config.tgBotToken = tkn;
             saveConfig();
             startTelegramPolling();
-            sendTelegramNotification('Halo Mas Fando! Bot Token Telegram berhasil disimpan dan pendengar chat dua arah aktif.');
-            await replyMessage(remoteJid, { text: `✅ *Bot Token Telegram berhasil disimpan!*\nSekarang Mas Fando bisa membalas langsung dari Telegram tanpa perlu mengetik .enat lagi.` });
+            sendTelegramNotification('System', 'Halo Mas Fando! Bot Token Telegram berhasil disimpan.');
+            await replyMessage(remoteJid, { text: `✅ *Bot Token Telegram berhasil disimpan!*\nSekarang bisa balas langsung dari Telegram.` });
             continue;
           }
         }
 
         // ==========================================
-        // Logika Bot Keuangan
+        // Logika Bot Keuangan (hanya di Duit Gua Tuh)
         // ==========================================
         if (/^(start|bantuan|help|menu|halo+|hai+|hi+|\?)$/i.test(low)) {
           const help = `📖 *Panduan Penggunaan Bot Keuanganku*\n\n` +
@@ -892,10 +1297,12 @@ async function startBot() {
             `• ketik *rekap* : Rekap pengeluaran bulan ini\n` +
             `• ketik *undo* atau *batal* : Batalkan transaksi terakhir\n` +
             `• ketik *default <dompet>* : Ganti dompet default (mis. default bca)\n\n` +
-            `*4. Balas Chat Enat di Laptop:*\n` +
-            `• ketik *.enat <pesan>* (misal: *.enat iya Mas pulang jam 6*)\n\n` +
-            `*5. Pengaturan Notifikasi Telegram:*\n` +
-            `• ketik *.token <bot_token>* untuk menghubungkan bot Telegram`;
+            `*4. Chat Grup Turu Lee:*\n` +
+            `• Semua pesan di grup Turu Lee otomatis masuk ke laptop Enat\n` +
+            `• Atau ketik *.enat <pesan>* di grup ini\n\n` +
+            `*5. Pengaturan:*\n` +
+            `• *.token <bot_token>* : Hubungkan bot Telegram\n` +
+            `• *.setchat* : Set grup sebagai Turu Lee Chat`;
           await replyMessage(remoteJid, { text: help });
           continue;
         }
