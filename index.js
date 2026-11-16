@@ -79,7 +79,7 @@ if (fs.existsSync(chatGroupPath)) {
   } catch (e) {}
 }
 
-// Migrasi data lama chat_adik.json ke chat_group.json
+// Migrasi data lama chat_adik.json ke chat_group.json jika belum ada
 const chatAdikPath = path.join(__dirname, 'chat_adik.json');
 if (fs.existsSync(chatAdikPath) && chatGroupMessages.length === 0) {
   try {
@@ -96,6 +96,32 @@ function saveChatGroup() {
     fs.writeFileSync(chatGroupPath, JSON.stringify(chatGroupMessages, null, 2), 'utf8');
   } catch (e) {}
 }
+
+// Bersihkan pesan lama yang sempat tersimpan dengan format @lid
+function sanitizeOldMessages() {
+  if (!Array.isArray(chatGroupMessages) || chatGroupMessages.length === 0) return;
+  let changed = false;
+  chatGroupMessages.forEach(m => {
+    if (typeof m.from === 'string') {
+      const lower = m.from.toLowerCase();
+      if (lower.includes('lid') || lower === '6283184997388') {
+        m.from = 'eisss';
+        changed = true;
+      } else if (lower === 'kakak') {
+        m.from = 'mas';
+        changed = true;
+      } else if (lower === 'adik') {
+        m.from = 'enat';
+        changed = true;
+      }
+    }
+  });
+  if (changed) {
+    saveChatGroup();
+    console.log('[Sanitize] Berhasil membersihkan ID @lid pada riwayat pesan lama.');
+  }
+}
+sanitizeOldMessages();
 
 // Direktori penyimpanan Voice Notes
 const vnDir = path.join(__dirname, 'voice_notes');
@@ -117,28 +143,114 @@ function addGroupMessage(from, text, type = 'text', audioFile = null) {
   return msg;
 }
 
-// Resolusi nama anggota dari nomor WA
-function getMemberName(jid) {
-  const num = jid.replace('@s.whatsapp.net', '').replace('@g.us', '');
-  if (config.chatMembers && config.chatMembers[num]) {
-    return config.chatMembers[num].name;
-  }
-  return null;
+// ==========================================
+// Identifikasi & Pemetaan Anggota (Solusi Masalah @lid)
+// ==========================================
+const jidToMemberCache = new Map();
+
+function getBotOwnerInfo() {
+  const ownPhone = sock?.user?.id ? sock.user.id.split(':')[0].split('@')[0] : '';
+  const ownLid = sock?.user?.lid ? sock.user.lid.split(':')[0].split('@')[0] : '';
+  return { ownPhone, ownLid };
 }
 
-function getMemberKey(jid) {
-  const num = jid.replace('@s.whatsapp.net', '');
-  if (config.chatMembers && config.chatMembers[num]) {
-    return config.chatMembers[num].name.toLowerCase();
+async function syncGroupParticipants(groupId) {
+  if (!sock || !groupId) return;
+  try {
+    const meta = await sock.groupMetadata(groupId);
+    if (!meta || !Array.isArray(meta.participants)) return;
+
+    const { ownPhone, ownLid } = getBotOwnerInfo();
+    console.log(`[Turu Lee] Sinkronisasi ${meta.participants.length} peserta di grup:`);
+
+    for (const p of meta.participants) {
+      const pId = p.id || '';
+      const pJid = p.jid || '';
+      const pLid = p.lid || (pId.endsWith('@lid') ? pId : '');
+
+      const isOwner = (ownPhone && (pId.includes(ownPhone) || pJid.includes(ownPhone))) ||
+                      (ownLid && (pId.includes(ownLid) || pLid.includes(ownLid)));
+
+      if (isOwner) {
+        const ownerInfo = { name: 'Mas Fando', color: '#25d366', isOwner: true };
+        jidToMemberCache.set('mas', ownerInfo);
+        if (pId) jidToMemberCache.set(pId, ownerInfo);
+        if (pLid) jidToMemberCache.set(pLid, ownerInfo);
+        if (pJid) jidToMemberCache.set(pJid, ownerInfo);
+      } else {
+        // Anggota keluarga di Turu Lee (Eisss)
+        const eisssInfo = config.chatMembers?.['6283184997388'] || { name: 'Eisss', color: '#ff6b6b' };
+        const memberInfo = { ...eisssInfo, isOwner: false };
+        if (pId) jidToMemberCache.set(pId, memberInfo);
+        if (pLid) jidToMemberCache.set(pLid, memberInfo);
+        if (pJid) jidToMemberCache.set(pJid, memberInfo);
+        console.log(`✅ [Turu Lee Mapping] Peserta ${pId || pLid} terhubung ke ${memberInfo.name}`);
+      }
+    }
+  } catch (err) {
+    console.error('Gagal sinkronisasi peserta grup:', err.message);
   }
-  return null;
 }
 
-function isBotOwner(jid) {
-  if (!sock?.user?.id) return false;
-  const ownNum = sock.user.id.split(':')[0];
-  const senderNum = jid.replace('@s.whatsapp.net', '');
-  return senderNum === ownNum;
+function resolveSender(msg, isChatGroup = false) {
+  const senderJid = msg.key?.participant || msg.key?.remoteJid || '';
+  const cleanSenderJid = senderJid.split(':')[0];
+  const { ownPhone, ownLid } = getBotOwnerInfo();
+
+  // 1. Jika pesan dari nomor sendiri (Mas Fando)
+  if (
+    msg.key?.fromMe ||
+    (ownPhone && cleanSenderJid.includes(ownPhone)) ||
+    (ownLid && cleanSenderJid.includes(ownLid))
+  ) {
+    return { key: 'mas', name: 'Mas Fando', isOwner: true };
+  }
+
+  // 2. Cek apakah JID/LID sudah tercatat di cache
+  if (jidToMemberCache.has(cleanSenderJid)) {
+    const info = jidToMemberCache.get(cleanSenderJid);
+    return { key: info.name.toLowerCase(), name: info.name, isOwner: !!info.isOwner };
+  }
+
+  // 3. Cek nomor anggota di config.chatMembers
+  if (config.chatMembers) {
+    for (const [phone, info] of Object.entries(config.chatMembers)) {
+      if (cleanSenderJid.includes(phone)) {
+        jidToMemberCache.set(cleanSenderJid, info);
+        return { key: info.name.toLowerCase(), name: info.name, isOwner: false };
+      }
+    }
+  }
+
+  // 4. Jika di grup Turu Lee dan bukan Mas Fando:
+  // Karena anggota keluarga di grup ini hanya Mas Fando dan Eisss, pengirim ini 100% Eisss!
+  if (isChatGroup) {
+    const defaultMember = config.chatMembers?.['6283184997388'] || { name: 'Eisss', color: '#ff6b6b' };
+    jidToMemberCache.set(cleanSenderJid, defaultMember);
+    console.log(`[Auto-Map] Memetakan pengirim ${cleanSenderJid} sebagai ${defaultMember.name}`);
+    return { key: defaultMember.name.toLowerCase(), name: defaultMember.name, isOwner: false };
+  }
+
+  // Fallback: gunakan pushName atau nomor bersih
+  const fallbackName = msg.pushName || cleanSenderJid.replace('@s.whatsapp.net', '').replace('@lid', '');
+  return {
+    key: fallbackName.toLowerCase().replace(/\s+/g, '_'),
+    name: fallbackName,
+    isOwner: false
+  };
+}
+
+async function updateGroupIconIfPossible(groupId) {
+  if (!sock || !groupId) return;
+  const photoPath = path.join(__dirname, 'turu-lee.jpg');
+  if (!fs.existsSync(photoPath)) return;
+  try {
+    const imgBuffer = fs.readFileSync(photoPath);
+    await sock.updateProfilePicture(groupId, imgBuffer);
+    console.log('✅ [WhatsApp] Foto profil grup Turu Lee berhasil dipasang di WhatsApp!');
+  } catch (err) {
+    console.log('ℹ️ [WhatsApp] Info foto profil grup:', err.message);
+  }
 }
 
 function notifyUbuntuDesktop(title, body) {
@@ -436,7 +548,6 @@ const server = http.createServer((req, res) => {
     req.on('end', async () => {
       try {
         const rawBody = Buffer.concat(chunks);
-        // Expect multipart or raw audio; we'll handle raw OGG/WebM from browser MediaRecorder
         const vnFilename = 'vn_enat_' + Date.now() + '.ogg';
         const vnPath = path.join(vnDir, vnFilename);
         fs.writeFileSync(vnPath, rawBody);
@@ -487,6 +598,21 @@ const server = http.createServer((req, res) => {
       res.end('Not found');
     }
     return;
+  }
+
+  // 3d. API: Serve foto profil grup "Turu Lee" & avatar
+  if (url === '/group-photo.jpg' || url === '/turu-lee.jpg' || url === '/foto-grup.jpg') {
+    const photoPath = path.join(__dirname, 'turu-lee.jpg');
+    if (fs.existsSync(photoPath)) {
+      res.writeHead(200, {
+        'Content-Type': 'image/jpeg',
+        'Cache-Control': 'public, max-age=86400'
+      });
+      return fs.createReadStream(photoPath).pipe(res);
+    } else {
+      res.writeHead(404);
+      return res.end('Foto tidak ditemukan');
+    }
   }
 
   // 4. API Test Notifikasi Telegram
@@ -607,7 +733,6 @@ const server = http.createServer((req, res) => {
 // HTML Halaman Chat Grup "Turu Lee"
 // ==========================================
 function getChatHTML() {
-  // Bangun daftar anggota untuk CSS warna
   const memberColors = {};
   if (config.chatMembers) {
     for (const [num, info] of Object.entries(config.chatMembers)) {
@@ -616,11 +741,11 @@ function getChatHTML() {
   }
   memberColors['mas'] = '#25d366';
   memberColors['enat'] = '#53bdeb';
+  memberColors['eisss'] = '#ff6b6b';
 
   const memberColorsJson = JSON.stringify(memberColors);
 
-  // Bangun map nama tampilan
-  const displayNames = { mas: 'Mas Fando', enat: 'Enat' };
+  const displayNames = { mas: 'Mas Fando', enat: 'Enat', eisss: 'Eisss' };
   if (config.chatMembers) {
     for (const [num, info] of Object.entries(config.chatMembers)) {
       displayNames[info.name.toLowerCase()] = info.name;
@@ -639,25 +764,25 @@ function getChatHTML() {
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #0b141a; color: #e9edef; height: 100vh; display: flex; justify-content: center; }
         .chat-container { width: 100%; max-width: 500px; height: 100vh; display: flex; flex-direction: column; background: #111b21; border-left: 1px solid #202c33; border-right: 1px solid #202c33; }
-        .header { background: #202c33; padding: 14px 18px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid rgba(255,255,255,0.08); }
-        .avatar-group { display: flex; gap: -8px; }
-        .avatar { width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: bold; color: #fff; border: 2px solid #202c33; }
-        .avatar.a1 { background: #25d366; }
-        .avatar.a2 { background: #53bdeb; margin-left: -10px; }
-        .avatar.a3 { background: #ff6b6b; margin-left: -10px; }
-        .header-info h2 { font-size: 16px; font-weight: 600; color: #e9edef; }
+        .header { background: #202c33; padding: 12px 16px; display: flex; align-items: center; gap: 14px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+        .header-photo-wrap { position: relative; width: 46px; height: 46px; flex-shrink: 0; }
+        .header-group-photo { width: 46px; height: 46px; border-radius: 50%; object-fit: cover; border: 2px solid #00a884; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+        .online-dot { position: absolute; bottom: 0; right: 0; width: 13px; height: 13px; background: #25d366; border-radius: 50%; border: 2.5px solid #202c33; }
+        .header-info h2 { font-size: 16px; font-weight: 600; color: #e9edef; display: flex; align-items: center; gap: 6px; }
         .header-info p { font-size: 12px; color: #8696a0; }
-        .members-tag { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
-        .tag { font-size: 10px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+        .members-tag { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 3px; }
+        .tag { font-size: 10.5px; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
         .messages-box { flex: 1; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; background-color: #0b141a; background-image: radial-gradient(#1f2c34 1px, transparent 1px); background-size: 20px 20px; }
         .bubble-row { display: flex; width: 100%; }
         .bubble-row.enat { justify-content: flex-end; }
         .bubble-row.mas, .bubble-row.eisss { justify-content: flex-start; }
-        .bubble { max-width: 78%; padding: 9px 13px; border-radius: 12px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; position: relative; }
+        .bubble { max-width: 80%; padding: 9px 13px; border-radius: 12px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; position: relative; }
         .bubble.enat { background: #005c4b; color: #e9edef; border-bottom-right-radius: 2px; }
         .bubble.mas { background: #202c33; color: #e9edef; border-bottom-left-radius: 2px; }
-        .bubble.eisss { background: #2d1f2f; color: #e9edef; border-bottom-left-radius: 2px; }
-        .sender-name { font-size: 11px; font-weight: 600; margin-bottom: 3px; }
+        .bubble.eisss { background: #2d1f2f; color: #e9edef; border-bottom-left-radius: 2px; border: 1px solid rgba(255,107,107,0.18); }
+        .sender-header { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+        .sender-avatar { width: 18px; height: 18px; border-radius: 50%; object-fit: cover; }
+        .sender-name { font-size: 11.5px; font-weight: 600; }
         .msg-time { font-size: 10px; color: rgba(255,255,255,0.55); float: right; margin-left: 10px; margin-top: 4px; }
         .input-bar { background: #202c33; padding: 12px; display: flex; gap: 10px; align-items: center; }
         .input-box { flex: 1; background: #2a3942; border: none; outline: none; border-radius: 24px; padding: 12px 18px; color: #fff; font-size: 15px; }
@@ -682,10 +807,9 @@ function getChatHTML() {
     <body>
       <div class="chat-container">
         <div class="header">
-          <div class="avatar-group">
-            <div class="avatar a1">F</div>
-            <div class="avatar a2">E</div>
-            <div class="avatar a3">I</div>
+          <div class="header-photo-wrap">
+            <img src="/group-photo.jpg" alt="Turu Lee" class="header-group-photo" onerror="this.onerror=null; this.src='https://ui-avatars.com/api/?name=Turu+Lee&background=00a884&color=fff';" />
+            <div class="online-dot" title="Online"></div>
           </div>
           <div class="header-info">
             <h2>🌙 Turu Lee</h2>
@@ -716,7 +840,6 @@ function getChatHTML() {
         const DISPLAY_NAMES = ${displayNamesJson};
         let lastCount = 0;
 
-        // Suara notifikasi
         function playDing() {
           try {
             const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -747,7 +870,9 @@ function getChatHTML() {
                 const newest = msgs[msgs.length - 1];
                 if (newest.from !== 'enat') {
                   playDing();
-                  const senderDisplay = DISPLAY_NAMES[newest.from] || newest.from;
+                  let normFrom = (newest.from || '').toLowerCase().trim();
+                  if (normFrom.includes('lid') || normFrom === '6283184997388') normFrom = 'eisss';
+                  const senderDisplay = DISPLAY_NAMES[normFrom] || (normFrom === 'mas' ? 'Mas Fando' : 'Eisss');
                   if (window.Notification && Notification.permission === 'granted') {
                     new Notification('Turu Lee — ' + senderDisplay, { body: newest.type === 'audio' ? '🎤 Voice Note' : newest.text });
                   }
@@ -764,10 +889,20 @@ function getChatHTML() {
           box.innerHTML = '<div style="text-align: center; color: #8696a0; font-size: 12px; margin: 15px 0;">🌙 Selamat datang di Turu Lee! Obrolan keluarga yang aman dan privat.</div>';
           msgs.forEach(m => {
             const row = document.createElement('div');
-            const fromKey = m.from.toLowerCase();
+            let fromKey = (m.from || '').toLowerCase().trim();
+
+            // Normalisasi agar tidak ada lagi @lid yang lolos
+            if (fromKey.includes('lid') || fromKey === '6283184997388') {
+              fromKey = 'eisss';
+            } else if (fromKey === 'kakak') {
+              fromKey = 'mas';
+            } else if (fromKey === 'adik') {
+              fromKey = 'enat';
+            }
+
             row.className = 'bubble-row ' + fromKey;
-            const senderColor = MEMBER_COLORS[fromKey] || '#8696a0';
-            const senderDisplay = DISPLAY_NAMES[fromKey] || m.from;
+            const senderColor = MEMBER_COLORS[fromKey] || (fromKey === 'mas' ? '#25d366' : fromKey === 'eisss' ? '#ff6b6b' : '#53bdeb');
+            const senderDisplay = DISPLAY_NAMES[fromKey] || (fromKey === 'mas' ? 'Mas Fando' : fromKey === 'eisss' ? 'Eisss' : fromKey === 'enat' ? 'Enat' : m.from);
 
             let contentHtml = '';
             if (m.type === 'audio' && m.audioFile) {
@@ -776,9 +911,14 @@ function getChatHTML() {
               contentHtml = '<span class="text">' + escapeHtml(m.text) + '</span>';
             }
 
+            const avatarHtml = fromKey === 'eisss' ? '<img src="/group-photo.jpg" class="sender-avatar" alt="Eisss" />' : '';
+
             row.innerHTML =
               '<div class="bubble ' + fromKey + '">' +
-                '<div class="sender-name" style="color: ' + senderColor + ';">' + escapeHtml(senderDisplay) + '</div>' +
+                '<div class="sender-header">' +
+                  avatarHtml +
+                  '<span class="sender-name" style="color: ' + senderColor + ';">' + escapeHtml(senderDisplay) + '</span>' +
+                '</div>' +
                 contentHtml +
                 '<span class="msg-time">' + m.time + '</span>' +
               '</div>';
@@ -1017,6 +1157,8 @@ async function startBot() {
       if (chatGroup) {
         config.chatGroupId = chatGroup.id;
         console.log(`✅ Grup Obrolan: "${chatGroup.subject}" (ID: ${chatGroup.id})`);
+        await syncGroupParticipants(chatGroup.id);
+        await updateGroupIconIfPossible(chatGroup.id);
       } else {
         console.log(`⚠️ Belum menemukan grup obrolan "${config.chatGroupName}".`);
         console.log(`   Ketik ".setchat" di grup obrolan Anda untuk menghubungkannya.\n`);
@@ -1040,9 +1182,6 @@ async function startBot() {
 
       const remoteJid = msg.key.remoteJid;
       const isGroup = remoteJid.endsWith('@g.us');
-
-      // Identifikasi pengirim di dalam grup
-      const senderJid = msg.key.participant || remoteJid;
 
       const rawText = msg.message.conversation ||
         msg.message.extendedTextMessage?.text ||
@@ -1093,15 +1232,29 @@ async function startBot() {
           if (meta.subject) config.chatGroupName = meta.subject;
         } catch (e) {}
         saveConfig();
+        await syncGroupParticipants(remoteJid);
+        await updateGroupIconIfPossible(remoteJid);
         await replyMessage(remoteJid, {
           text: `✅ *Grup ini terhubung sebagai Turu Lee Chat!*\nSemua pesan di sini akan muncul di layar laptop Enat.\nSemua anggota bisa ngobrol langsung tanpa awalan apapun!`
         });
         continue;
       }
 
-      // Cek apakah ini pesan dari grup Turu Lee (bukan dari bot sendiri)
+      // Cek apakah ini pesan dari grup Turu Lee
       if (isChatGroup) {
-        const senderIsBotOwner = isBotOwner(senderJid);
+        const sender = resolveSender(msg, true);
+        const senderName = sender.name;
+        const senderKey = sender.key;
+        const senderIsBotOwner = sender.isOwner;
+
+        // Command khusus di grup obrolan: .setfoto / .setphoto
+        if (text && (text.toLowerCase() === '.setfoto' || text.toLowerCase() === '.setphoto')) {
+          await updateGroupIconIfPossible(remoteJid);
+          await replyMessage(remoteJid, {
+            text: `✅ *Foto profil grup Turu Lee berhasil diperbarui!*`
+          });
+          continue;
+        }
 
         // Deteksi Voice Note dari WA → simpan dan tampilkan di web
         if (isVoiceNote) {
@@ -1110,19 +1263,6 @@ async function startBot() {
             const vnFilename = 'vn_wa_' + Date.now() + '.ogg';
             const vnPath = path.join(vnDir, vnFilename);
             fs.writeFileSync(vnPath, buffer);
-
-            let senderName = 'Mas Fando';
-            let senderKey = 'mas';
-            if (!senderIsBotOwner) {
-              const memberName = getMemberName(senderJid);
-              if (memberName) {
-                senderName = memberName;
-                senderKey = memberName.toLowerCase();
-              } else {
-                senderName = senderJid.replace('@s.whatsapp.net', '');
-                senderKey = senderName;
-              }
-            }
 
             addGroupMessage(senderKey, '🎤 Voice Note', 'audio', vnFilename);
             notifyUbuntuDesktop(`VN dari ${senderName}`, '🎤 Voice Note baru');
@@ -1138,19 +1278,6 @@ async function startBot() {
 
         // Pesan teks dari WA Turu Lee → simpan ke chat dan notif
         if (text && !text.startsWith('.')) {
-          let senderName = 'Mas Fando';
-          let senderKey = 'mas';
-          if (!senderIsBotOwner) {
-            const memberName = getMemberName(senderJid);
-            if (memberName) {
-              senderName = memberName;
-              senderKey = memberName.toLowerCase();
-            } else {
-              senderName = senderJid.replace('@s.whatsapp.net', '');
-              senderKey = senderName;
-            }
-          }
-
           addGroupMessage(senderKey, text);
           notifyUbuntuDesktop(`Pesan dari ${senderName}`, text);
 
@@ -1162,7 +1289,6 @@ async function startBot() {
 
         // Pesan dengan awalan "." di grup chat tetap bisa diproses sebagai command
         if (text && text.startsWith('.')) {
-          // Cek apakah ini perintah balas ke web chat (.enat)
           const cleanText = text.replace(/^\./, '').trim();
           const low = cleanText.toLowerCase();
 
@@ -1177,7 +1303,6 @@ async function startBot() {
             }
           }
 
-          // Token bot telegram
           if (low.startsWith('token ') || low.startsWith('settoken ')) {
             const tkn = cleanText.replace(/^(settoken|token)\s*/i, '').trim();
             if (tkn) {
@@ -1190,7 +1315,7 @@ async function startBot() {
           }
         }
 
-        continue; // Pesan di Turu Lee sudah diproses, lanjut ke pesan berikut
+        continue;
       }
 
       // ==========================================
@@ -1203,7 +1328,8 @@ async function startBot() {
             config.chatGroupId = remoteJid;
             saveConfig();
             console.log(`✅ Grup Obrolan ditemukan otomatis: "${meta.subject}" (ID: ${remoteJid})`);
-            // Re-proses pesan ini sebagai pesan Turu Lee — skip untuk sekarang, pesan berikutnya akan terdeteksi
+            await syncGroupParticipants(remoteJid);
+            await updateGroupIconIfPossible(remoteJid);
           }
         } catch (e) {}
       }
@@ -1302,7 +1428,8 @@ async function startBot() {
             `• Atau ketik *.enat <pesan>* di grup ini\n\n` +
             `*5. Pengaturan:*\n` +
             `• *.token <bot_token>* : Hubungkan bot Telegram\n` +
-            `• *.setchat* : Set grup sebagai Turu Lee Chat`;
+            `• *.setchat* : Set grup sebagai Turu Lee Chat\n` +
+            `• *.setfoto* : Pasang foto profil grup Turu Lee`;
           await replyMessage(remoteJid, { text: help });
           continue;
         }

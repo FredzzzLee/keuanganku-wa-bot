@@ -30,6 +30,7 @@ Bot WhatsApp Self-Bot untuk pencatatan keuangan + obrolan keluarga.
 | Perintah | Deskripsi | Contoh |
 | :--- | :--- | :--- |
 | `.setchat` | Hubungkan grup sebagai Turu Lee Chat | Ketik di grup |
+| `.setfoto` | Pasang foto profil grup Turu Lee di WA | Ketik di grup |
 | `.setgroup` | Hubungkan grup sebagai Keuanganku | Ketik di grup |
 | `.enat <pesan>` | Kirim pesan ke laptop Enat | `.enat Mas lagi di jalan` |
 | `.token <token>` | Pasang token bot Telegram | `.token 123456:ABC...` |
