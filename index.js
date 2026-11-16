@@ -98,9 +98,53 @@ function notifyUbuntuDesktop(title, body) {
   if (process.platform === 'linux') {
     const cleanTitle = title.replace(/"/g, '\\"');
     const cleanBody = body.replace(/"/g, '\\"');
-    exec(`notify-send -a "Chat Kakak" "${cleanTitle}" "${cleanBody}"`, err => {
+    exec(`notify-send -a "Chat Mas Fando" "${cleanTitle}" "${cleanBody}"`, err => {
       if (err) console.error('notify-send error:', err.message);
     });
+  }
+}
+
+function sendTelegramNotification(message) {
+  if (!config.tgBotToken || !config.tgChatId) return;
+
+  const tgData = JSON.stringify({
+    chat_id: String(config.tgChatId),
+    text: `💬 *[Pesan dari Enat]*:\n"${message}"\n\n_Balas via WA: .enat <pesan>_`,
+    parse_mode: 'Markdown'
+  });
+
+  try {
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      port: 443,
+      path: `/bot${config.tgBotToken}/sendMessage`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(tgData)
+      },
+      timeout: 5000
+    }, res => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(body);
+          if (json.ok) {
+            console.log('[Telegram] Notifikasi pesan Enat terkirim ke Mas Fando!');
+          } else {
+            console.error('[Telegram] Gagal kirim notif:', json.description);
+          }
+        } catch (e) {}
+      });
+    });
+
+    req.on('error', err => console.error('[Telegram] Error:', err.message));
+    req.on('timeout', () => req.destroy());
+    req.write(tgData);
+    req.end();
+  } catch (e) {
+    console.error('[Telegram] Error request:', e.message);
   }
 }
 
@@ -108,7 +152,7 @@ function sendPushNotification(title, message) {
   const topic = config.ntfyTopic || 'fando-pesan-adik-2026';
   const postData = Buffer.from(message, 'utf8');
 
-  // Kirim ke server ntfy (adminforge & ntfy.sh) agar HP berdering & muncul banner pop-up
+  // Kirim ke server ntfy (adminforge & ntfy.sh)
   const servers = ['ntfy.adminforge.de', 'ntfy.sh'];
   servers.forEach(hostname => {
     try {
@@ -134,32 +178,6 @@ function sendPushNotification(title, message) {
       req.end();
     } catch (e) {}
   });
-
-  // Opsional: Kirim ke Telegram jika bot token diisi
-  if (config.tgBotToken && config.tgChatId) {
-    try {
-      const tgData = JSON.stringify({
-        chat_id: config.tgChatId,
-        text: `💬 *[Pesan dari Adik]*:\n"${message}"\n\n_Balas via WA: .adik <pesan>_`,
-        parse_mode: 'Markdown'
-      });
-      const tgReq = https.request({
-        hostname: 'api.telegram.org',
-        port: 443,
-        path: `/bot${config.tgBotToken}/sendMessage`,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(tgData)
-        },
-        timeout: 4000
-      }, res => res.resume());
-      tgReq.on('error', () => {});
-      tgReq.on('timeout', () => tgReq.destroy());
-      tgReq.write(tgData);
-      tgReq.end();
-    } catch (e) {}
-  }
 }
 
 // ==========================================
@@ -185,7 +203,7 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify(chatAdikMessages));
   }
 
-  // 3. API Chat Adik: Kirim pesan dari laptop adik ke WhatsApp Kakak
+  // 3. API Chat Adik: Kirim pesan dari laptop adik ke WhatsApp Mas Fando
   if (url === '/api/kirim-pesan' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
@@ -198,21 +216,24 @@ const server = http.createServer((req, res) => {
           return res.end(JSON.stringify({ error: 'Pesan tidak boleh kosong' }));
         }
 
-        const newMsg = addAdikMessage('adik', text);
+        const newMsg = addAdikMessage('enat', text);
 
-        // 1. Kirim Push Notification ke HP Kakak (ntfy) agar HP langsung berdering & pop-up
-        sendPushNotification('Pesan Baru dari Adik', text);
+        // 1. Kirim Notifikasi ke Telegram Mas Fando (dijamin 100% berbunyi & muncul pop-up)
+        sendTelegramNotification(text);
 
-        // 2. Kirim WhatsApp ke grup atau nomor pribadi kakak
+        // 2. Kirim juga Push Notification (ntfy)
+        sendPushNotification('Pesan Baru dari Enat', text);
+
+        // 3. Kirim WhatsApp ke grup atau nomor pribadi Mas Fando
         const target = config.targetGroupId || (sock?.user?.id ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : null);
         if (sock && target) {
           try {
             const sent = await sock.sendMessage(target, {
-              text: `💬 *[Pesan dari Adik]:*\n"${text}"\n\n_Balas dengan: .adik <pesanmu>_`
+              text: `💬 *[Pesan dari Enat]:*\n"${text}"\n\n_Balas dengan: .enat <pesanmu>_`
             });
             if (sent?.key?.id) markSeen(sent.key.id);
           } catch (err) {
-            console.error('Gagal kirim WA ke kakak:', err.message);
+            console.error('Gagal kirim WA ke Mas Fando:', err.message);
           }
         }
 
@@ -224,6 +245,17 @@ const server = http.createServer((req, res) => {
       }
     });
     return;
+  }
+
+  // 4. API Test Notifikasi Telegram Mas Fando
+  if (url === '/api/test-tg') {
+    if (!config.tgBotToken) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'tgBotToken belum diatur di config.json' }));
+    }
+    sendTelegramNotification('Halo Mas Fando! Notifikasi Telegram berhasil terhubung dan siap dipakai.');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ success: true, tgChatId: config.tgChatId }));
   }
 
   // 4. API Test Notifikasi HP Kakak
@@ -245,7 +277,7 @@ const server = http.createServer((req, res) => {
       <html lang="id">
       <head>
         <meta charset="utf-8">
-        <title>Chat Kak Fando</title>
+        <title>Chat Mas Fando</title>
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
         <style>
           * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -258,13 +290,13 @@ const server = http.createServer((req, res) => {
           .dot { width: 7px; height: 7px; background: #25d366; border-radius: 50%; }
           .messages-box { flex: 1; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; background-color: #0b141a; background-image: radial-gradient(#1f2c34 1px, transparent 1px); background-size: 20px 20px; }
           .bubble-row { display: flex; width: 100%; }
-          .bubble-row.adik { justify-content: flex-end; }
-          .bubble-row.kakak { justify-content: flex-start; }
+          .bubble-row.enat, .bubble-row.adik { justify-content: flex-end; }
+          .bubble-row.kakak, .bubble-row.mas { justify-content: flex-start; }
           .bubble { max-width: 78%; padding: 9px 13px; border-radius: 12px; font-size: 14.5px; line-height: 1.45; word-wrap: break-word; position: relative; }
-          .bubble.adik { background: #005c4b; color: #e9edef; border-bottom-right-radius: 2px; }
-          .bubble.kakak { background: #202c33; color: #e9edef; border-bottom-left-radius: 2px; }
+          .bubble.enat, .bubble.adik { background: #005c4b; color: #e9edef; border-bottom-right-radius: 2px; }
+          .bubble.kakak, .bubble.mas { background: #202c33; color: #e9edef; border-bottom-left-radius: 2px; }
           .sender-name { font-size: 11px; font-weight: 600; margin-bottom: 3px; color: #25d366; }
-          .bubble.adik .sender-name { color: #53bdeb; }
+          .bubble.enat .sender-name, .bubble.adik .sender-name { color: #53bdeb; }
           .msg-time { font-size: 10px; color: rgba(255,255,255,0.55); float: right; margin-left: 10px; margin-top: 4px; }
           .input-bar { background: #202c33; padding: 12px; display: flex; gap: 10px; align-items: center; }
           .input-box { flex: 1; background: #2a3942; border: none; outline: none; border-radius: 24px; padding: 12px 18px; color: #fff; font-size: 15px; }
@@ -277,21 +309,21 @@ const server = http.createServer((req, res) => {
       <body>
         <div class="chat-container">
           <div class="header">
-            <div class="avatar">K</div>
+            <div class="avatar">M</div>
             <div class="header-info">
-              <h2>Kak Fando</h2>
+              <h2>Mas Fando</h2>
               <p><span class="dot"></span> Online via WhatsApp</p>
             </div>
           </div>
 
           <div class="messages-box" id="msgBox">
             <div style="text-align: center; color: #8696a0; font-size: 12px; margin: 15px 0;">
-              🔒 Pesan ini langsung terkirim ke WhatsApp Kak Fando secara aman.
+              🔒 Pesan ini langsung terkirim ke WhatsApp Mas Fando secara aman.
             </div>
           </div>
 
           <form class="input-bar" id="chatForm" onsubmit="kirimPesan(event)">
-            <input type="text" id="inputMsg" class="input-box" placeholder="Ketik pesan untuk Kak Fando..." autocomplete="off" />
+            <input type="text" id="inputMsg" class="input-box" placeholder="Ketik pesan untuk Mas Fando..." autocomplete="off" />
             <button type="submit" class="btn-send" id="sendBtn">➤</button>
           </form>
         </div>
@@ -326,13 +358,13 @@ const server = http.createServer((req, res) => {
               const res = await fetch('/api/pesan');
               const msgs = await res.json();
               if (msgs.length > lastCount) {
-                // Ada pesan baru dari kakak
+                // Ada pesan baru dari Mas Fando
                 if (lastCount > 0) {
                   const newest = msgs[msgs.length - 1];
-                  if (newest.from === 'kakak') {
+                  if (newest.from === 'kakak' || newest.from === 'mas') {
                     playDing();
                     if (window.Notification && Notification.permission === 'granted') {
-                      new Notification('Pesan dari Kak Fando', { body: newest.text });
+                      new Notification('Pesan dari Mas Fando', { body: newest.text });
                     }
                   }
                 }
@@ -344,13 +376,13 @@ const server = http.createServer((req, res) => {
 
           function renderMessages(msgs) {
             const box = document.getElementById('msgBox');
-            box.innerHTML = '<div style="text-align: center; color: #8696a0; font-size: 12px; margin: 15px 0;">🔒 Pesan ini langsung terkirim ke WhatsApp Kak Fando secara aman.</div>';
+            box.innerHTML = '<div style="text-align: center; color: #8696a0; font-size: 12px; margin: 15px 0;">🔒 Pesan ini langsung terkirim ke WhatsApp Mas Fando secara aman.</div>';
             msgs.forEach(m => {
               const row = document.createElement('div');
               row.className = 'bubble-row ' + m.from;
               row.innerHTML = \`
                 <div class="bubble \${m.from}">
-                  <div class="sender-name">\${m.from === 'adik' ? 'Adik' : 'Kak Fando'}</div>
+                  <div class="sender-name">\${(m.from === 'enat' || m.from === 'adik') ? 'Enat' : 'Mas Fando'}</div>
                   <span class="text">\${escapeHtml(m.text)}</span>
                   <span class="msg-time">\${m.time}</span>
                 </div>
@@ -678,18 +710,32 @@ async function startBot() {
 
       try {
         // ==========================================
-        // Perintah Balas ke Adik: ".adik <pesan>"
+        // Perintah Balas ke Enat: ".enat <pesan>" (atau ".adik <pesan>")
         // ==========================================
-        if (low.startsWith('adik ') || low === 'adik') {
-          const balasan = cleanText.replace(/^adik\s*/i, '').trim();
+        if (low.startsWith('enat ') || low === 'enat' || low.startsWith('adik ') || low === 'adik') {
+          const balasan = cleanText.replace(/^(enat|adik)\s*/i, '').trim();
           if (!balasan) {
-            await replyMessage(remoteJid, { text: 'Tulis pesan untuk adik, contoh: *.adik kakak lagi di jalan*' });
+            await replyMessage(remoteJid, { text: 'Tulis pesan untuk Enat, contoh: *.enat Mas lagi di jalan*' });
           } else {
-            addAdikMessage('kakak', balasan);
-            notifyUbuntuDesktop('Pesan dari Kak Fando', balasan);
-            await replyMessage(remoteJid, { text: `✅ *Terkirim ke laptop adik:*\n"${balasan}"` });
+            addAdikMessage('mas', balasan);
+            notifyUbuntuDesktop('Pesan dari Mas Fando', balasan);
+            await replyMessage(remoteJid, { text: `✅ *Terkirim ke laptop Enat:*\n"${balasan}"` });
           }
           continue;
+        }
+
+        // ==========================================
+        // Pengaturan Token Bot Telegram: ".token <bot_token>"
+        // ==========================================
+        if (low.startsWith('token ') || low.startsWith('settoken ')) {
+          const tkn = cleanText.replace(/^(settoken|token)\s*/i, '').trim();
+          if (tkn) {
+            config.tgBotToken = tkn;
+            saveConfig();
+            sendTelegramNotification('Halo Mas Fando! Bot Token Telegram berhasil disimpan dan aktif.');
+            await replyMessage(remoteJid, { text: `✅ *Bot Token Telegram berhasil disimpan!*\nNotifikasi percobaan sedang dikirim ke akun Telegram Mas Fando.` });
+            continue;
+          }
         }
 
         // ==========================================
@@ -710,8 +756,10 @@ async function startBot() {
             `• ketik *rekap* : Rekap pengeluaran bulan ini\n` +
             `• ketik *undo* atau *batal* : Batalkan transaksi terakhir\n` +
             `• ketik *default <dompet>* : Ganti dompet default (mis. default bca)\n\n` +
-            `*4. Balas Chat Adik di Laptop:*\n` +
-            `• ketik *.adik <pesan>* (misal: *.adik iya kakak pulang jam 6*)`;
+            `*4. Balas Chat Enat di Laptop:*\n` +
+            `• ketik *.enat <pesan>* (misal: *.enat iya Mas pulang jam 6*)\n\n` +
+            `*5. Pengaturan Notifikasi Telegram:*\n` +
+            `• ketik *.token <bot_token>* untuk menghubungkan bot Telegram`;
           await replyMessage(remoteJid, { text: help });
           continue;
         }

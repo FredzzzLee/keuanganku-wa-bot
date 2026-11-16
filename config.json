@@ -4,5 +4,7 @@
   "targetGroupId": "120363432547277067@g.us",
   "defaultWallet": "cash",
   "ntfyTopic": "fando-pesan-adik-2026",
-  "ntfyServer": "https://ntfy.adminforge.de"
+  "ntfyServer": "https://ntfy.adminforge.de",
+  "tgBotToken": null,
+  "tgChatId": "1844869035"
 }
