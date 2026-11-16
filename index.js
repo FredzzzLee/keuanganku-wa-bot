@@ -9,6 +9,7 @@ const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
 const qrcodeWeb = require('qrcode');
 const http = require('http');
+const https = require('https');
 const path = require('path');
 const fs = require('fs');
 const { exec } = require('child_process');
@@ -32,7 +33,11 @@ let config = {
   uid: 'IOb7TUEF4eWiKlow5C06AvWepqD3',
   targetGroupName: 'Duit Gua Tuh',
   targetGroupId: null,
-  defaultWallet: 'cash'
+  defaultWallet: 'cash',
+  ntfyTopic: 'fando-pesan-adik-2026',
+  ntfyServer: 'https://ntfy.adminforge.de',
+  tgBotToken: null,
+  tgChatId: '1844869035'
 };
 
 if (fs.existsSync(configPath)) {
@@ -99,6 +104,64 @@ function notifyUbuntuDesktop(title, body) {
   }
 }
 
+function sendPushNotification(title, message) {
+  const topic = config.ntfyTopic || 'fando-pesan-adik-2026';
+  const postData = Buffer.from(message, 'utf8');
+
+  // Kirim ke server ntfy (adminforge & ntfy.sh) agar HP berdering & muncul banner pop-up
+  const servers = ['ntfy.adminforge.de', 'ntfy.sh'];
+  servers.forEach(hostname => {
+    try {
+      const options = {
+        hostname,
+        port: 443,
+        path: `/${encodeURIComponent(topic)}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Content-Length': postData.length,
+          'Title': title,
+          'Priority': 'high',
+          'Tags': 'speech_balloon,loudspeaker',
+          'Click': 'whatsapp://'
+        },
+        timeout: 4000
+      };
+      const req = https.request(options, res => res.resume());
+      req.on('error', () => {});
+      req.on('timeout', () => req.destroy());
+      req.write(postData);
+      req.end();
+    } catch (e) {}
+  });
+
+  // Opsional: Kirim ke Telegram jika bot token diisi
+  if (config.tgBotToken && config.tgChatId) {
+    try {
+      const tgData = JSON.stringify({
+        chat_id: config.tgChatId,
+        text: `💬 *[Pesan dari Adik]*:\n"${message}"\n\n_Balas via WA: .adik <pesan>_`,
+        parse_mode: 'Markdown'
+      });
+      const tgReq = https.request({
+        hostname: 'api.telegram.org',
+        port: 443,
+        path: `/bot${config.tgBotToken}/sendMessage`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(tgData)
+        },
+        timeout: 4000
+      }, res => res.resume());
+      tgReq.on('error', () => {});
+      tgReq.on('timeout', () => tgReq.destroy());
+      tgReq.write(tgData);
+      tgReq.end();
+    } catch (e) {}
+  }
+}
+
 // ==========================================
 // Status Global & HTTP Web Server
 // ==========================================
@@ -137,7 +200,10 @@ const server = http.createServer((req, res) => {
 
         const newMsg = addAdikMessage('adik', text);
 
-        // Kirim WhatsApp ke grup atau nomor pribadi kakak
+        // 1. Kirim Push Notification ke HP Kakak (ntfy) agar HP langsung berdering & pop-up
+        sendPushNotification('Pesan Baru dari Adik', text);
+
+        // 2. Kirim WhatsApp ke grup atau nomor pribadi kakak
         const target = config.targetGroupId || (sock?.user?.id ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : null);
         if (sock && target) {
           try {
@@ -160,7 +226,18 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 4. Halaman Web Chat Privat Adik (http://localhost:3000/pesan)
+  // 4. API Test Notifikasi HP Kakak
+  if (url === '/api/test-notif') {
+    sendPushNotification('Test Notifikasi HP', 'Halo Kak Fando! Notifikasi ntfy berhasil terhubung.');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({
+      success: true,
+      topic: config.ntfyTopic || 'fando-pesan-adik-2026',
+      server: config.ntfyServer || 'https://ntfy.adminforge.de'
+    }));
+  }
+
+  // 5. Halaman Web Chat Privat Adik (http://localhost:3000/pesan)
   if (url === '/pesan' || url === '/chat') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(`
