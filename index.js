@@ -104,13 +104,23 @@ function notifyUbuntuDesktop(title, body) {
   }
 }
 
+function escapeTgHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function sendTelegramNotification(message) {
-  if (!config.tgBotToken || !config.tgChatId) return;
+  if (!config.tgBotToken || !config.tgChatId) {
+    console.log('[Telegram] Tidak dikirim karena tgBotToken atau tgChatId belum diisi.');
+    return;
+  }
 
   const tgData = JSON.stringify({
     chat_id: String(config.tgChatId),
-    text: `💬 *[Pesan dari Enat]*:\n"${message}"\n\n_Balas via WA: .enat <pesan>_`,
-    parse_mode: 'Markdown'
+    text: `💬 <b>[Pesan dari Enat]:</b>\n"${escapeTgHtml(message)}"\n\n<i>Ketik balasan langsung di sini untuk membalas</i>`,
+    parse_mode: 'HTML'
   });
 
   try {
@@ -131,7 +141,7 @@ function sendTelegramNotification(message) {
         try {
           const json = JSON.parse(body);
           if (json.ok) {
-            console.log('[Telegram] Notifikasi pesan Enat terkirim ke Mas Fando!');
+            console.log('[Telegram] Notifikasi pesan Enat berhasil dikirim ke Mas Fando!');
           } else {
             console.error('[Telegram] Gagal kirim notif:', json.description);
           }
@@ -156,7 +166,7 @@ function sendTelegramAck(chatId, text) {
   const payload = JSON.stringify({
     chat_id: String(chatId),
     text: text,
-    parse_mode: 'Markdown'
+    parse_mode: 'HTML'
   });
   const req = https.request({
     hostname: 'api.telegram.org',
@@ -234,7 +244,7 @@ function startTelegramPolling() {
 
                 const text = m.text.trim();
                 if (text === '/start') {
-                  sendTelegramAck(m.chat.id, '👋 *Halo Mas Fando!*\nBot sudah aktif. Ketik apa saja langsung di sini (tanpa awalan apapun), dan pesanmu akan langsung masuk ke layar laptop Enat!');
+                  sendTelegramAck(m.chat.id, '👋 <b>Halo Mas Fando!</b>\nBot sudah aktif. Ketik apa saja langsung di sini (tanpa awalan apapun), dan pesanmu akan langsung masuk ke layar laptop Enat!');
                   continue;
                 }
 
@@ -243,7 +253,7 @@ function startTelegramPolling() {
                 notifyUbuntuDesktop('Pesan dari Mas Fando', text);
 
                 // Kirim konfirmasi balik ke Telegram
-                sendTelegramAck(m.chat.id, `✅ *Terkirim ke Enat:*\n"${text}"`);
+                sendTelegramAck(m.chat.id, `✅ <b>Terkirim ke Enat:</b>\n"${escapeTgHtml(text)}"`);
               }
             }
           } catch (e) {}
