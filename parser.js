@@ -110,6 +110,7 @@ const INCOME_WORDS = [
   'komisi', 'insentif', 'tunjangan', 'lembur', 'reward', 'dividen', 'bunga', 'cuan', 'untung', 'laba', 'profit', 'omzet', 'jualan', 'terjual', 'laku',
   'dikasih', 'dikasi', 'dikasihin', 'dikasihkan', 'dikirimi', 'dikirimin', 'dikirimkan', 'dikirim', 'dibayar', 'ditransfer', 'ditransferin', 'transferan',
   'diberi', 'diberikan', 'angpao', 'ang pao', 'angpau', 'hadiah', 'kiriman', 'uang saku', 'uang jajan', 'uang bulanan', 'jatah', 'sangu',
+  'pinjam', 'pinjem', 'minjem', 'ngutang', 'dapat pinjaman',
   'menang', 'juara', 'undian', 'giveaway', 'saweran', 'warisan', 'hibah', 'santunan'
 ];
 
@@ -120,15 +121,18 @@ const EXPENSE_WORDS = [
   'biaya', 'ongkir', 'denda', 'pajak', 'tiket', 'karcis', 'retribusi',
   'traktir', 'nraktir', 'mentraktir', 'donasi', 'sedekah', 'infaq', 'infak', 'zakat', 'sumbang', 'nyumbang', 'sumbangan', 'patungan', 'urunan', 'iuran',
   'ngasih', 'ngasi', 'kasih', 'kasi', 'memberi', 'memberikan', 'ngirim', 'kirim', 'mengirim',
+  'pinjamin', 'pinjamkan', 'minjamin', 'ngutangin', 'ganti uang',
   'ditarik', 'ditagih', 'dimintai', 'diminta', 'dipalak', 'kecopetan', 'kehilangan', 'ketipu', 'kena', 'rugi', 'boncos'
 ];
 
 const STRONG_INCOME_WORDS = [
   'dikasih', 'dikasi', 'dikasihin', 'dikasihkan', 'dikirimi', 'dikirimin', 'dikirimkan', 'ditransfer', 'ditransferin',
-  'diberi', 'diberikan', 'dibalikin', 'dikembalikan', 'digaji', 'gajian'
+  'diberi', 'diberikan', 'dibalikin', 'dikembalikan', 'digaji', 'gajian',
+  'pinjam uang', 'pinjem uang', 'minjem uang'
 ];
 
 const STRONG_EXPENSE_WORDS = [
+  'bayar utang', 'bayar hutang', 'bayar pinjaman', 'pinjamkan', 'pinjamin', 'minjamin', 'ngutangin', 'ganti uang',
   'ditarik', 'ditagih', 'dimintai', 'diminta', 'dipalak', 'ngasih', 'ngasi', 'ngirim', 'nyumbang', 'nraktir', 'mentraktir',
   'membayar', 'membeli', 'beliin', 'belikan', 'bayarin', 'bayarkan', 'kecopetan', 'kehilangan', 'ketipu', 'transfer ke', 'tf ke', 'kirim ke'
 ];
