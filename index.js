@@ -240,13 +240,20 @@ function resolveSender(msg, isChatGroup = false) {
   };
 }
 
+let lastGroupIconUpdate = 0;
 async function updateGroupIconIfPossible(groupId) {
   if (!sock || !groupId) return;
+  const now = Date.now();
+  if (now - lastGroupIconUpdate < 30000) {
+    console.log('ℹ️ [WhatsApp] Foto profil grup baru saja diperbarui, mengabaikan...');
+    return;
+  }
   const photoPath = path.join(__dirname, 'turu-lee.jpg');
   if (!fs.existsSync(photoPath)) return;
   try {
     const imgBuffer = fs.readFileSync(photoPath);
     await sock.updateProfilePicture(groupId, imgBuffer);
+    lastGroupIconUpdate = now;
     console.log('✅ [WhatsApp] Foto profil grup Turu Lee berhasil dipasang di WhatsApp!');
   } catch (err) {
     console.log('ℹ️ [WhatsApp] Info foto profil grup:', err.message);
@@ -1158,7 +1165,6 @@ async function startBot() {
         config.chatGroupId = chatGroup.id;
         console.log(`✅ Grup Obrolan: "${chatGroup.subject}" (ID: ${chatGroup.id})`);
         await syncGroupParticipants(chatGroup.id);
-        await updateGroupIconIfPossible(chatGroup.id);
       } else {
         console.log(`⚠️ Belum menemukan grup obrolan "${config.chatGroupName}".`);
         console.log(`   Ketik ".setchat" di grup obrolan Anda untuk menghubungkannya.\n`);
@@ -1233,7 +1239,6 @@ async function startBot() {
         } catch (e) {}
         saveConfig();
         await syncGroupParticipants(remoteJid);
-        await updateGroupIconIfPossible(remoteJid);
         await replyMessage(remoteJid, {
           text: `✅ *Grup ini terhubung sebagai Turu Lee Chat!*\nSemua pesan di sini akan muncul di layar laptop Enat.\nSemua anggota bisa ngobrol langsung tanpa awalan apapun!`
         });
@@ -1329,7 +1334,6 @@ async function startBot() {
             saveConfig();
             console.log(`✅ Grup Obrolan ditemukan otomatis: "${meta.subject}" (ID: ${remoteJid})`);
             await syncGroupParticipants(remoteJid);
-            await updateGroupIconIfPossible(remoteJid);
           }
         } catch (e) {}
       }
